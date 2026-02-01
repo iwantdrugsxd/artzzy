@@ -11,7 +11,6 @@ import {
   View,
 } from "react-native";
 import * as ExpoLocation from "expo-location";
-import MapView, { Marker, PROVIDER_GOOGLE, Region } from "react-native-maps";
 import { CommonActions, RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
 import { RootStackParamList } from "../types/navigation";
@@ -22,6 +21,12 @@ import { Ionicons } from "@expo/vector-icons";
 
 type Route = RouteProp<RootStackParamList, "LocationPicker">;
 type Nav = StackNavigationProp<RootStackParamList, "LocationPicker">;
+type Region = {
+  latitude: number;
+  longitude: number;
+  latitudeDelta: number;
+  longitudeDelta: number;
+};
 
 const DEFAULT_COORDS = {
   latitude: 19.076,
@@ -218,14 +223,9 @@ const LocationPickerScreen: React.FC = () => {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <MapView
-        style={styles.map}
-        provider={PROVIDER_GOOGLE}
-        initialRegion={region}
-        onRegionChangeComplete={setRegion}
-      >
-        <Marker coordinate={{ latitude: region.latitude, longitude: region.longitude }} />
-      </MapView>
+      <View style={styles.map}>
+        <Text style={styles.mapPlaceholder}>Map preview unavailable in Snack</Text>
+      </View>
 
       <View
         style={[
@@ -311,6 +311,13 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.bg,
+  },
+  mapPlaceholder: {
+    color: colors.textMuted,
+    ...typography.body2,
   },
   searchCard: {
     position: "absolute",
