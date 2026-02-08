@@ -262,11 +262,25 @@ export const connectionStorage = {
 
       const expiryHours = getChatExpiryHours(profile || undefined);
 
+      // Connection refs for immediate addition
+      const connectionA = doc(db, "users", fromUid, "connections", toUid);
+      const connectionB = doc(db, "users", toUid, "connections", fromUid);
+      const userARef = doc(db, "users", fromUid);
+      const userBRef = doc(db, "users", toUid);
+
       await runTransaction(db, async (tx) => {
         const snap = await tx.get(requestRef);
-        if (!snap.exists()) return;
+        if (!snap.exists()) {
+          logger.warn("connection.accept.request_not_found", { requestId, toUid });
+          return;
+        }
         const data = snap.data() as ConnectionRequest;
-        if (data.status !== "pending") return;
+        if (data.status !== "pending") {
+          logger.warn("connection.accept.request_not_pending", { requestId, toUid, status: data.status });
+          return;
+        }
+        
+        logger.info("connection.accept.processing", { requestId, fromUid, toUid, chatId });
 
         tx.update(requestRef, {
           status: "accepted",
@@ -293,23 +307,68 @@ export const connectionStorage = {
           text: "✨ You both vibed. Say hi.",
           createdAt: serverTimestamp(),
         });
+
+        // Immediately add connections and increment counters (idempotent)
+        const connASnap = await tx.get(connectionA);
+        const connBSnap = await tx.get(connectionB);
+
+        // Only create connection and increment if it doesn't already exist
+        if (!connASnap.exists()) {
+          logger.info("connection.accept.creating_connection_a", { fromUid, toUid, chatId });
+          tx.set(
+            connectionA,
+            {
+              otherUid: toUid,
+              sinceAt: serverTimestamp(),
+              sourceChatId: chatId,
+            },
+            { merge: true }
+          );
+          tx.update(userARef, {
+            connectionsCount: increment(1),
+          });
+        } else {
+          logger.info("connection.accept.connection_a_exists", { fromUid, toUid });
+        }
+
+        if (!connBSnap.exists()) {
+          logger.info("connection.accept.creating_connection_b", { fromUid, toUid, chatId });
+          tx.set(
+            connectionB,
+            {
+              otherUid: fromUid,
+              sinceAt: serverTimestamp(),
+              sourceChatId: chatId,
+            },
+            { merge: true }
+          );
+          tx.update(userBRef, {
+            connectionsCount: increment(1),
+          });
+        } else {
+          logger.info("connection.accept.connection_b_exists", { fromUid, toUid           });
+        }
       });
+
+      logger.info("connection.accept.completed", { requestId, fromUid, toUid, chatId });
 
       await createNotification(fromUid, {
         type: "connection_accepted",
+        fromUid: toUid, // Other user (acceptor) is the "from" for sender
         toUid,
         chatId,
         requestId,
         title: "You're connected 🎉",
-        body: `You’re connected with ${toName}. Say hi.`,
+        body: `You're connected with ${toName}. Say hi.`,
       });
       await createNotification(toUid, {
         type: "connection_accepted",
+        fromUid, // Sender is the "from" for receiver
         toUid,
         chatId,
         requestId,
         title: "Chat opened",
-        body: `You’re connected with ${fromName}.`,
+        body: `You're connected with ${fromName}.`,
       });
 
       return { chatId };

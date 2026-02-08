@@ -61,6 +61,7 @@ export const OutingCard: React.FC<OutingCardProps> = ({
   const spotsLeft = Math.max(outing.maxGuests - (outing.approvedCount ?? 0), 0);
   const isFull = spotsLeft <= 0 || outing.status === "full"; // Phase 2: Check status field too
   const modeBadge = outing.eventMode ? getModeBadge(outing.eventMode) : null;
+  const displayTitle = outing.title?.trim() || "Outing";
 
   // Phase 2: Status badge - use only red (black/red/white only)
   const statusBadge = isFull
@@ -135,7 +136,7 @@ export const OutingCard: React.FC<OutingCardProps> = ({
       <View style={styles.content}>
         <View style={styles.contentLeft}>
           <Text style={styles.title} numberOfLines={2}>
-            {outing.title}
+            {displayTitle}
           </Text>
           {outing.location?.name && (
             <Text style={styles.location} numberOfLines={1}>

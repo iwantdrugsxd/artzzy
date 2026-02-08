@@ -134,27 +134,172 @@ export const outingStorage = {
       const requestSnap = await tx.get(requestRef);
       if (!requestSnap.exists()) return;
       
-      tx.update(requestRef, { status: "approved", updatedAt: serverTimestamp() });
-      tx.set(memberRef, { role: "member", joinedAt: serverTimestamp() }, { merge: true });
-      tx.set(userIndexRef, { outingId, hostId, ...outingMeta }, { merge: true });
-      const outingData = await tx.get(outingRef);
-      const currentApproved = outingData.data()?.approvedCount || 0;
-      const maxGuests = outingData.data()?.maxGuests || 0;
+      // Sanitize outingMeta: remove undefined values and only include safe fields
+      // Firestore doesn't allow undefined, and Timestamp objects from reads might not be directly writable
+      // Only include essential string fields that are safe to write
+      const safeFields = ["title", "coverImageUrl", "area"] as const;
+      const sanitizedMeta: Record<string, unknown> = {};
       
-      tx.update(outingRef, {
-        pendingCount: increment(-1),
-        approvedCount: increment(1),
-        updatedAt: serverTimestamp(),
+      for (const [k, v] of Object.entries(outingMeta)) {
+        // Remove undefined (Firestore rejects undefined)
+        if (v === undefined) {
+          logger.warn("outingStorage.approve.sanitizing.undefined", { field: k });
+          continue;
+        }
+        
+        // Only include safe string fields (title, coverImageUrl, area)
+        // Exclude dateTime as Timestamp objects from reads might not be directly writable
+        if (safeFields.includes(k as typeof safeFields[number])) {
+          sanitizedMeta[k] = v; // Safe to include (string or null)
+        } else if (k === "dateTime") {
+          // Skip dateTime - it's a Timestamp and might cause issues when writing
+          logger.info("outingStorage.approve.sanitizing.skippingDateTime", { 
+            reason: "Timestamp from read may not be directly writable" 
+          });
+        } else if (k !== "outingId" && k !== "hostId") {
+          // Log unexpected fields but don't include them
+          logger.warn("outingStorage.approve.sanitizing.unexpectedField", { field: k, type: typeof v });
+        }
+      }
+      
+      // Validate required fields
+      if (!outingId || typeof outingId !== "string") {
+        throw new Error("Invalid outingId");
+      }
+      if (!hostId || typeof hostId !== "string") {
+        throw new Error("Invalid hostId");
+      }
+      
+      // Build final payload matching the structure used in CreateOutingScreen
+      // Required fields: outingId, role, status
+      // Optional fields: title, coverImageUrl, area, hostId
+      const finalPayload: Record<string, unknown> = {
+        outingId: String(outingId), // Required: ensure it's a string
+        role: "member", // Required: role for the user being approved
+        status: "active", // Required: status of the outing
+        hostId: String(hostId), // Optional but useful: host ID
+      };
+      
+      // Only add title if it's a valid non-empty string
+      if (sanitizedMeta.title && typeof sanitizedMeta.title === "string" && sanitizedMeta.title.trim()) {
+        finalPayload.title = String(sanitizedMeta.title).trim();
+      }
+      
+      // Only add coverImageUrl if it's a valid string (can be empty, but must be string)
+      if (sanitizedMeta.coverImageUrl !== undefined && sanitizedMeta.coverImageUrl !== null) {
+        finalPayload.coverImageUrl = String(sanitizedMeta.coverImageUrl);
+      }
+      
+      // Only add area if it's a valid string
+      if (sanitizedMeta.area !== undefined && sanitizedMeta.area !== null) {
+        finalPayload.area = String(sanitizedMeta.area);
+      }
+      
+      // Validate string lengths (Firestore has limits)
+      const MAX_STRING_LENGTH = 1048487; // Firestore max string length
+      for (const [k, v] of Object.entries(finalPayload)) {
+        if (typeof v === "string" && v.length > MAX_STRING_LENGTH) {
+          throw new Error(`Field ${k} exceeds maximum length`);
+        }
+      }
+      
+      logger.info("outingStorage.approve.sanitized", { 
+        originalKeys: Object.keys(outingMeta),
+        sanitizedKeys: Object.keys(sanitizedMeta),
+        finalKeys: Object.keys(finalPayload),
+        finalPayloadValues: Object.fromEntries(
+          Object.entries(finalPayload).map(([k, v]) => [
+            k, 
+            v === null ? "null" : typeof v === "string" ? `${String(v).substring(0, 50)}...` : typeof v
+          ])
+        ),
+        payloadStringLengths: Object.fromEntries(
+          Object.entries(finalPayload)
+            .filter(([, v]) => typeof v === "string")
+            .map(([k, v]) => [k, String(v).length])
+        )
       });
       
-      // Phase 2: Auto-close at capacity
-      if (currentApproved + 1 >= maxGuests) {
-        tx.update(outingRef, {
-          status: "full",
-          updatedAt: serverTimestamp(),
+      // Check if document exists and log existing data for debugging
+      const existingSnap = await tx.get(userIndexRef);
+      if (existingSnap.exists()) {
+        const existingData = existingSnap.data();
+        logger.info("outingStorage.approve.tx.userIndexRef.exists", { 
+          existingKeys: Object.keys(existingData || {}),
+          existingValues: Object.fromEntries(
+            Object.entries(existingData || {}).map(([k, v]) => [
+              k,
+              v === null ? "null" : typeof v === "string" ? `${String(v).substring(0, 30)}...` : typeof v
+            ])
+          )
         });
       }
       
+      // Firestore transactions require all reads before any writes.
+      const outingData = await tx.get(outingRef);
+      if (!outingData.exists()) {
+        throw new Error("Outing not found");
+      }
+      
+      const outingDocData = outingData.data();
+      const currentApproved = typeof outingDocData?.approvedCount === "number" ? outingDocData.approvedCount : 0;
+      const currentPending = typeof outingDocData?.pendingCount === "number" ? outingDocData.pendingCount : 0;
+      const maxGuests = typeof outingDocData?.maxGuests === "number" ? outingDocData.maxGuests : 0;
+
+      // Use setDoc without merge to avoid conflicts with existing invalid data
+      // This ensures we write exactly what we want, overwriting any existing data
+      tx.set(userIndexRef, finalPayload);
+      
+      logger.info("outingStorage.approve.tx.userIndexRef.set", { 
+        path: userIndexRef.path,
+        payloadKeys: Object.keys(finalPayload)
+      });
+      
+      logger.info("outingStorage.approve.tx.requestRef.update", { path: requestRef.path });
+      tx.update(requestRef, { status: "approved", updatedAt: serverTimestamp() });
+      
+      logger.info("outingStorage.approve.tx.memberRef.set", { path: memberRef.path });
+      tx.set(memberRef, { role: "member", joinedAt: serverTimestamp() }, { merge: true });
+      
+      // Validate that we can safely decrement pendingCount
+      if (currentPending < 1) {
+        logger.warn("outingStorage.approve.pendingCount.invalid", { currentPending });
+        // Don't throw, just log - the request might have been processed already
+      }
+      
+      // Build single update object to avoid multiple writes to same document
+      // Firestore doesn't allow multiple writes to the same doc in one transaction
+      // Only decrement pendingCount if it's > 0 to avoid negative values
+      const outingUpdate: Record<string, unknown> = {
+        approvedCount: increment(1),
+        updatedAt: serverTimestamp(),
+      };
+      
+      // Only decrement pendingCount if it's positive (avoid negative values)
+      if (currentPending > 0) {
+        outingUpdate.pendingCount = increment(-1);
+      } else {
+        // Set to 0 explicitly if it's already 0 or negative
+        outingUpdate.pendingCount = 0;
+      }
+      
+      // Phase 2: Auto-close at capacity (only if maxGuests > 0 to avoid false positives)
+      if (maxGuests > 0 && currentApproved + 1 >= maxGuests) {
+        outingUpdate.status = "full";
+      }
+      
+      logger.info("outingStorage.approve.tx.outingRef.update", {
+        currentApproved,
+        currentPending,
+        maxGuests,
+        willSetFull: maxGuests > 0 && currentApproved + 1 >= maxGuests,
+        updateKeys: Object.keys(outingUpdate)
+      });
+      
+      // Single update call to avoid invalid-argument error
+      tx.update(outingRef, outingUpdate);
+      
+      logger.info("outingStorage.approve.tx.messagesRef.set", { path: messagesRef.path });
       // Add system message
       tx.set(messagesRef, {
         type: "system",
@@ -307,19 +452,20 @@ export const outingStorage = {
         area: outingData.area || null,
       }, { merge: true });
       
-      // Increment approved count
-      tx.update(outingRef, {
+      // Build single update object to avoid multiple writes to same document
+      // Firestore doesn't allow multiple writes to the same doc in one transaction
+      const outingUpdate: Record<string, unknown> = {
         approvedCount: increment(1),
         updatedAt: serverTimestamp(),
-      });
+      };
       
-      // Phase 2: Auto-close at capacity
-      if (currentCount + 1 >= max) {
-        tx.update(outingRef, {
-          status: "full",
-          updatedAt: serverTimestamp(),
-        });
+      // Phase 2: Auto-close at capacity (only if max > 0 to avoid false positives)
+      if (max > 0 && currentCount + 1 >= max) {
+        outingUpdate.status = "full";
       }
+      
+      // Single update call to avoid invalid-argument error
+      tx.update(outingRef, outingUpdate);
       
       // Add system message
       tx.set(messagesRef, {
@@ -421,18 +567,19 @@ export const outingStorage = {
         
         // Only decrement if they were approved (not pending)
         if (memberData.role === "member") {
-          tx.update(outingRef, {
+          // Build single update object to avoid multiple writes to same document
+          const outingUpdate: Record<string, unknown> = {
             approvedCount: increment(-1),
             updatedAt: serverTimestamp(),
-          });
+          };
           
           // Phase 2: Reopen if was full and now has space
           if (currentStatus === "full" && currentApproved > 0) {
-            tx.update(outingRef, {
-              status: "active",
-              updatedAt: serverTimestamp(),
-            });
+            outingUpdate.status = "active";
           }
+          
+          // Single update call to avoid invalid-argument error
+          tx.update(outingRef, outingUpdate);
         }
 
         // Delete member doc and user index
@@ -494,18 +641,19 @@ export const outingStorage = {
         
         // Decrement count if they were approved
         if (memberData.role === "member") {
-          tx.update(outingRef, {
+          // Build single update object to avoid multiple writes to same document
+          const outingUpdate: Record<string, unknown> = {
             approvedCount: increment(-1),
             updatedAt: serverTimestamp(),
-          });
+          };
           
           // Phase 2: Reopen if was full and now has space
           if (currentStatus === "full" && currentApproved > 0) {
-            tx.update(outingRef, {
-              status: "active",
-              updatedAt: serverTimestamp(),
-            });
+            outingUpdate.status = "active";
           }
+          
+          // Single update call to avoid invalid-argument error
+          tx.update(outingRef, outingUpdate);
         }
 
         // Delete member doc and user index
@@ -685,20 +833,21 @@ export const outingStorage = {
           area: outingData.area || null,
         }, { merge: true });
         
-        // Update counts
-        tx.update(outingRef, {
+        // Build single update object to avoid multiple writes to same document
+        const outingUpdate: Record<string, unknown> = {
           approvedCount: increment(1),
           waitlistCount: increment(-1),
           updatedAt: serverTimestamp(),
-        });
+        };
         
-        // Auto-close if now full
-        if (outingData.approvedCount + 1 >= outingData.maxGuests) {
-          tx.update(outingRef, {
-            status: "full",
-            updatedAt: serverTimestamp(),
-          });
+        // Auto-close if now full (only if maxGuests > 0 to avoid false positives)
+        const maxGuests = outingData.maxGuests || 0;
+        if (maxGuests > 0 && outingData.approvedCount + 1 >= maxGuests) {
+          outingUpdate.status = "full";
         }
+        
+        // Single update call to avoid invalid-argument error
+        tx.update(outingRef, outingUpdate);
       });
       
       logger.info("outing.waitlist.promoted", { outingId, userId });

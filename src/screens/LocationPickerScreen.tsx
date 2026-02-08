@@ -1,448 +1,670 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  ActivityIndicator,
-  FlatList,
-  KeyboardAvoidingView,
-  Platform,
   StyleSheet,
   Text,
+  View,
   TextInput,
   TouchableOpacity,
-  View,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+  Alert,
+  ActivityIndicator,
 } from "react-native";
-import * as ExpoLocation from "expo-location";
-import { CommonActions, RouteProp, useNavigation, useRoute } from "@react-navigation/native";
+import { useRoute, useNavigation, RouteProp, CommonActions } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
-import { RootStackParamList } from "../types/navigation";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { placesAutocomplete, placeDetails, PlaceSuggestion } from "../utils/places";
-import { colors, layout, radius, typography } from "../theme";
 import { Ionicons } from "@expo/vector-icons";
+import MapView, { Marker, Region } from "react-native-maps";
+import * as Location from "expo-location";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { RootStackParamList } from "../types/navigation";
+import { LocationValue } from "../components/LocationField";
+import { placesAutocomplete, placeDetails, PlaceSuggestion } from "../utils/places";
+import { colors, layout, radius, typography, tokens } from "../theme";
+import Screen from "../components/Screen";
+import PrimaryButton from "../components/PrimaryButton";
+import { logger } from "../utils/logger";
 
 type Route = RouteProp<RootStackParamList, "LocationPicker">;
 type Nav = StackNavigationProp<RootStackParamList, "LocationPicker">;
-type Region = {
-  latitude: number;
-  longitude: number;
-  latitudeDelta: number;
-  longitudeDelta: number;
-};
-
-const DEFAULT_COORDS = {
-  latitude: 19.076,
-  longitude: 72.8777,
-};
-
-type LocationObject = {
-  name: string;
-  address: string;
-  lat: number;
-  lng: number;
-  placeId?: string;
-};
 
 const LocationPickerScreen: React.FC = () => {
   const route = useRoute<Route>();
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
+  const mapRef = useRef<MapView>(null);
 
-  const initialLat = route.params?.initialLocation?.lat ?? DEFAULT_COORDS.latitude;
-  const initialLng = route.params?.initialLocation?.lng ?? DEFAULT_COORDS.longitude;
+  const initialLocation = route.params?.initialLocation;
 
-  const [region, setRegion] = useState<Region>({
-    latitude: initialLat,
-    longitude: initialLng,
-    latitudeDelta: 0.01,
-    longitudeDelta: 0.01,
-  });
-  const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState(false);
+  // Search state
+  const [searchQuery, setSearchQuery] = useState("");
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
-  const [selected, setSelected] = useState<LocationObject | null>(
-    route.params?.initialLocation && route.params.initialLocation.lat != null
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+
+  // Location state
+  const [selectedLocation, setSelectedLocation] = useState<LocationValue | null>(
+    initialLocation
       ? {
-          name: route.params.initialLocation.name || "Pinned location",
-          address: route.params.initialLocation.address || "",
-          lat: route.params.initialLocation.lat!,
-          lng: route.params.initialLocation.lng!,
-          placeId: route.params.initialLocation.placeId,
+          name: initialLocation.name || "",
+          address: initialLocation.address || "",
+          lat: initialLocation.lat || 0,
+          lng: initialLocation.lng || 0,
+          placeId: initialLocation.placeId || "",
         }
       : null
   );
-  const [mapLoading, setMapLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [mapRegion, setMapRegion] = useState<Region | null>(null);
+  const [currentLocation, setCurrentLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationBias, setLocationBias] = useState<{ lat: number; lng: number } | undefined>();
 
-  // Optional current-location centering if no explicit initial location
+  // Bottom sheet details
+  const [addressLine2, setAddressLine2] = useState(initialLocation?.addressLine2 || "");
+  const [landmark, setLandmark] = useState(initialLocation?.landmark || "");
+  const [instructions, setInstructions] = useState(initialLocation?.instructions || "");
+
+  // Initialize map with current location or initial location
   useEffect(() => {
-    let cancelled = false;
-    const centerOnUser = async () => {
-      if (route.params?.initialLocation?.lat != null) {
-        setMapLoading(false);
-        return;
+    const initializeLocation = async () => {
+      // If initial location provided, center map on it first
+      if (initialLocation?.lat && initialLocation?.lng) {
+        const region: Region = {
+          latitude: initialLocation.lat,
+          longitude: initialLocation.lng,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        };
+        setMapRegion(region);
+        return; // Don't try to get current location if initial is provided
       }
+
       try {
-        const { status } = await ExpoLocation.requestForegroundPermissionsAsync();
-        if (status !== "granted") {
-          setMapLoading(false);
-          return;
+        // Request location permission
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === "granted") {
+          const position = await Location.getCurrentPositionAsync({});
+          const coords = {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+          };
+          setCurrentLocation(coords);
+          setLocationBias(coords);
+
+          // Center map on current location
+          const region: Region = {
+            latitude: coords.lat,
+            longitude: coords.lng,
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
+          };
+          setMapRegion(region);
+        } else {
+          // Fallback: default to Mumbai if permission denied
+          const defaultRegion: Region = {
+            latitude: 19.0760,
+            longitude: 72.8777,
+            latitudeDelta: 0.1,
+            longitudeDelta: 0.1,
+          };
+          setMapRegion(defaultRegion);
         }
-        const pos = await ExpoLocation.getCurrentPositionAsync({});
-        if (cancelled) return;
-        setRegion((prev) => ({
-          ...prev,
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-        }));
-      } catch {
-        // ignore; keep default
-      } finally {
-        if (!cancelled) setMapLoading(false);
+      } catch (error) {
+        logger.error("location.picker.init.failed", { error });
+        // Fallback: default to Mumbai on error
+        const defaultRegion: Region = {
+          latitude: 19.0760,
+          longitude: 72.8777,
+          latitudeDelta: 0.1,
+          longitudeDelta: 0.1,
+        };
+        setMapRegion(defaultRegion);
       }
     };
-    centerOnUser();
-    return () => {
-      cancelled = true;
-    };
-  }, [route.params]);
 
-  // Debounced autocomplete
+    initializeLocation();
+  }, []);
+
+  // Debounced search
   useEffect(() => {
-    let cancelled = false;
-    if (!query || query.trim().length < 2) {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (!searchQuery.trim()) {
       setSuggestions([]);
+      setShowSuggestions(false);
       return;
     }
-    const timeout = setTimeout(async () => {
+
+    searchTimeoutRef.current = setTimeout(async () => {
       setSearching(true);
-      setError(null);
       try {
-        const results = await placesAutocomplete(query.trim(), {
-          lat: region.latitude,
-          lng: region.longitude,
-        });
-        if (!cancelled) {
-          setSuggestions(results);
-        }
-      } catch {
-        if (!cancelled) {
-          setError("Could not search places. Pull to retry.");
-        }
+        const results = await placesAutocomplete(searchQuery.trim(), locationBias);
+        setSuggestions(results);
+        setShowSuggestions(true);
+      } catch (error) {
+        logger.error("location.picker.autocomplete.failed", { error });
+        setSuggestions([]);
       } finally {
-        if (!cancelled) setSearching(false);
+        setSearching(false);
       }
     }, 300);
+
     return () => {
-      cancelled = true;
-      clearTimeout(timeout);
-    };
-  }, [query, region.latitude, region.longitude]);
-
-  const recenterToUser = async () => {
-    try {
-      const { status } = await ExpoLocation.requestForegroundPermissionsAsync();
-      if (status !== "granted") return;
-      const pos = await ExpoLocation.getCurrentPositionAsync({});
-      setRegion((prev) => ({
-        ...prev,
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-      }));
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleSelectSuggestion = async (item: PlaceSuggestion) => {
-    setSearching(true);
-    setError(null);
-    try {
-      const details = await placeDetails(item.placeId);
-      if (!details) {
-        setError("Could not load place details.");
-        return;
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
       }
-      const loc: LocationObject = {
-        name: details.name || item.text,
-        address: details.address,
-        lat: details.lat,
-        lng: details.lng,
-        placeId: details.placeId,
-      };
-      setSelected(loc);
-      setRegion((prev) => ({
-        ...prev,
-        latitude: loc.lat,
-        longitude: loc.lng,
-      }));
-      setSuggestions([]);
-      setQuery(details.name || item.text);
+    };
+  }, [searchQuery, locationBias]);
+
+  const handleSuggestionSelect = async (suggestion: PlaceSuggestion) => {
+    setSearching(true);
+    setShowSuggestions(false);
+    setSearchQuery(suggestion.text);
+
+    try {
+      const details = await placeDetails(suggestion.placeId);
+      if (details) {
+        const location: LocationValue = {
+          name: details.name,
+          address: details.address,
+          lat: details.lat,
+          lng: details.lng,
+          placeId: details.placeId,
+        };
+        setSelectedLocation(location);
+
+        // Center map on selected location
+        const region: Region = {
+          latitude: details.lat,
+          longitude: details.lng,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        };
+        setMapRegion(region);
+        mapRef.current?.animateToRegion(region, 500);
+      }
+    } catch (error) {
+      logger.error("location.picker.details.failed", { error });
+      Alert.alert("Error", "Failed to load location details. Please try again.");
     } finally {
       setSearching(false);
     }
   };
 
-  const handleConfirm = () => {
-    const base =
-      selected ??
-      ({
-        name: route.params?.initialLocation?.name || "Pinned location",
-        address: route.params?.initialLocation?.address || "",
+  const handleMapRegionChange = useCallback((region: Region) => {
+    setMapRegion(region);
+    // Update selected location coordinates if user drags map
+    if (selectedLocation) {
+      setSelectedLocation({
+        ...selectedLocation,
         lat: region.latitude,
         lng: region.longitude,
-        placeId: route.params?.initialLocation?.placeId || "",
-      } as LocationObject);
+      });
+    }
+  }, [selectedLocation]);
 
-    const locationResult = {
-      name: base.name,
-      address: base.address,
-      lat: base.lat,
-      lng: base.lng,
-      placeId: base.placeId || "",
-    };
+  const handleUseCurrentLocation = async () => {
+    if (currentLocation) {
+      const region: Region = {
+        latitude: currentLocation.lat,
+        longitude: currentLocation.lng,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      };
+      setMapRegion(region);
+      mapRef.current?.animateToRegion(region, 500);
 
-    // Navigate back to existing CreateOuting screen and merge params there
-    navigation.navigate("CreateOuting", { locationResult } as any);
+      // Try to reverse geocode to get address
+      try {
+        const [place] = await Location.reverseGeocodeAsync({
+          latitude: currentLocation.lat,
+          longitude: currentLocation.lng,
+        });
+        if (place) {
+          const address = [
+            place.street,
+            place.city,
+            place.region,
+            place.country,
+          ]
+            .filter(Boolean)
+            .join(", ");
+
+          setSelectedLocation({
+            name: place.name || address || "Current Location",
+            address: address,
+            lat: currentLocation.lat,
+            lng: currentLocation.lng,
+            placeId: "", // No placeId for current location
+          });
+        }
+      } catch (error) {
+        logger.error("location.picker.reverse.geocode.failed", { error });
+        // Still set location even if reverse geocode fails
+        setSelectedLocation({
+          name: "Current Location",
+          address: `${currentLocation.lat.toFixed(6)}, ${currentLocation.lng.toFixed(6)}`,
+          lat: currentLocation.lat,
+          lng: currentLocation.lng,
+          placeId: "",
+        });
+      }
+    }
   };
 
-  const renderSuggestion = ({ item }: { item: PlaceSuggestion }) => (
-    <TouchableOpacity
-      style={styles.suggestionRow}
-      onPress={() => handleSelectSuggestion(item)}
-    >
-      <View style={styles.suggestionTextWrap}>
-        <Text style={styles.suggestionPrimary}>{item.text}</Text>
-        {!!item.secondaryText && (
-          <Text style={styles.suggestionSecondary}>{item.secondaryText}</Text>
-        )}
-      </View>
-    </TouchableOpacity>
-  );
+  const handleConfirm = () => {
+    if (!selectedLocation || !selectedLocation.lat || !selectedLocation.lng) {
+      Alert.alert("Location Required", "Please select a location on the map.");
+      return;
+    }
+
+    const result: LocationValue = {
+      ...selectedLocation,
+      addressLine2: addressLine2.trim() || undefined,
+      landmark: landmark.trim() || undefined,
+      instructions: instructions.trim() || undefined,
+    };
+
+    // Navigate back to CreateOuting with location result
+    // Note: This will update params on the existing CreateOuting screen if it exists in the stack
+    logger.info("locationPicker.confirming", { 
+      hasLocation: !!selectedLocation,
+      locationName: result.name,
+      locationAddress: result.address 
+    });
+    
+    // Navigate to existing CreateOuting and merge params to avoid remount/state loss
+    navigation.navigate({
+      name: "CreateOuting",
+      params: { locationResult: result },
+      merge: true,
+    });
+  };
+
+  const canConfirm = selectedLocation && selectedLocation.lat && selectedLocation.lng;
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      <View style={styles.map}>
-        <Text style={styles.mapPlaceholder}>Map preview unavailable in Snack</Text>
-      </View>
-
-      <View
-        style={[
-          styles.searchCard,
-          { top: insets.top + layout.section },
-        ]}
+    <Screen contentContainerStyle={styles.container} scroll={false}>
+      <KeyboardAvoidingView
+        style={styles.keyboardView}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={insets.top}
       >
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
-          <Ionicons name="chevron-back" size={18} color={colors.textPrimary} />
-        </TouchableOpacity>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search location..."
-          placeholderTextColor={colors.textSubtle}
-          value={query}
-          onChangeText={setQuery}
-        />
-        {!!query && (
-          <TouchableOpacity
-            onPress={() => {
-              setQuery("");
-              setSuggestions([]);
-              setError(null);
-            }}
-            style={styles.iconButton}
-          >
-            <Ionicons name="close" size={16} color={colors.textSubtle} />
-          </TouchableOpacity>
-        )}
-        {searching && (
-          <ActivityIndicator size="small" color={colors.textSubtle} />
-        )}
-      </View>
-
-      {(error || query.trim().length >= 2) && (
-        <View style={styles.resultsCard}>
-          {error ? (
-            <Text style={styles.errorText}>{error}</Text>
-          ) : suggestions.length === 0 && !searching ? (
-            <Text style={styles.emptyText}>No places found</Text>
-          ) : (
-            <FlatList
-              data={suggestions}
-              keyExtractor={(item) => item.placeId}
-              renderItem={renderSuggestion}
-              keyboardShouldPersistTaps="handled"
+        {/* Search Bar */}
+        <View style={[styles.searchContainer, { paddingTop: insets.top + layout.compact }]}>
+          <View style={styles.searchBar}>
+            <Ionicons name="search" size={20} color={colors.textMuted} style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search for a place..."
+              placeholderTextColor={colors.textMuted}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              onFocus={() => {
+                if (suggestions.length > 0) setShowSuggestions(true);
+              }}
             />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  setSearchQuery("");
+                  setSuggestions([]);
+                  setShowSuggestions(false);
+                }}
+                style={styles.clearButton}
+              >
+                <Ionicons name="close-circle" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            )}
+            {searching && (
+              <ActivityIndicator size="small" color={colors.primary} style={styles.searchLoader} />
+            )}
+          </View>
+
+          {/* Suggestions List */}
+          {showSuggestions && suggestions.length > 0 && (
+            <View style={styles.suggestionsContainer}>
+              <ScrollView
+                style={styles.suggestionsList}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+              >
+                {suggestions.map((suggestion, index) => (
+                  <TouchableOpacity
+                    key={`${suggestion.placeId}-${index}`}
+                    style={styles.suggestionItem}
+                    onPress={() => handleSuggestionSelect(suggestion)}
+                  >
+                    <Ionicons
+                      name="location"
+                      size={18}
+                      color={colors.primary}
+                      style={styles.suggestionIcon}
+                    />
+                    <View style={styles.suggestionText}>
+                      <Text style={styles.suggestionMain}>{suggestion.text}</Text>
+                      {suggestion.secondaryText ? (
+                        <Text style={styles.suggestionSecondary}>{suggestion.secondaryText}</Text>
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
           )}
         </View>
-      )}
 
-      <TouchableOpacity style={styles.locateButton} onPress={recenterToUser}>
-        <Ionicons name="locate" size={18} color={colors.textPrimary} />
-      </TouchableOpacity>
+        {/* Map View */}
+        {mapRegion ? (
+          <MapView
+            ref={mapRef}
+            style={styles.map}
+            initialRegion={mapRegion}
+            onRegionChangeComplete={handleMapRegionChange}
+            showsUserLocation={true}
+            showsMyLocationButton={false}
+            mapType="standard"
+          >
+            {selectedLocation && (
+              <Marker
+                coordinate={{
+                  latitude: selectedLocation.lat,
+                  longitude: selectedLocation.lng,
+                }}
+                title={selectedLocation.name}
+                description={selectedLocation.address}
+              />
+            )}
+          </MapView>
+        ) : (
+          <View style={styles.mapPlaceholder}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.mapPlaceholderText}>Loading map...</Text>
+          </View>
+        )}
 
-      <View style={styles.bottomCard}>
-        <Text style={styles.bottomLabel}>SELECTED LOCATION</Text>
-        <Text style={styles.bottomTitle}>
-          {selected ? selected.name : "Move pin or search to pick a spot"}
-        </Text>
-        {selected?.address ? (
-          <Text style={styles.bottomSubtitle}>{selected.address}</Text>
-        ) : null}
-        <TouchableOpacity
-          style={[
-            styles.button,
-            !selected && { opacity: 0.5 },
-          ]}
-          onPress={handleConfirm}
-          disabled={!selected}
-        >
-          <Text style={styles.buttonText}>Confirm location</Text>
-        </TouchableOpacity>
-      </View>
-    </KeyboardAvoidingView>
+        {/* Bottom Sheet */}
+        <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + layout.section }]}>
+          <ScrollView
+            style={styles.bottomSheetContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {selectedLocation ? (
+              <>
+                <View style={styles.locationHeader}>
+                  <View style={styles.locationInfo}>
+                    <Text style={styles.locationName}>{selectedLocation.name}</Text>
+                    <Text style={styles.locationAddress}>{selectedLocation.address}</Text>
+                  </View>
+                  {currentLocation && (
+                    <TouchableOpacity
+                      onPress={handleUseCurrentLocation}
+                      style={styles.currentLocationButton}
+                    >
+                      <Ionicons name="locate" size={18} color={colors.primary} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                <View style={styles.detailsSection}>
+                  <Text style={styles.detailsLabel}>Building / Flat / Floor</Text>
+                  <TextInput
+                    style={styles.detailsInput}
+                    placeholder="e.g., Floor 3, Apt 2B"
+                    placeholderTextColor={colors.textMuted}
+                    value={addressLine2}
+                    onChangeText={setAddressLine2}
+                  />
+
+                  <Text style={styles.detailsLabel}>Landmark</Text>
+                  <TextInput
+                    style={styles.detailsInput}
+                    placeholder="e.g., Near Starbucks, Behind the mall"
+                    placeholderTextColor={colors.textMuted}
+                    value={landmark}
+                    onChangeText={setLandmark}
+                  />
+
+                  <Text style={styles.detailsLabel}>Instructions</Text>
+                  <TextInput
+                    style={[styles.detailsInput, styles.detailsInputMultiline]}
+                    placeholder="e.g., Ring doorbell, Use side entrance"
+                    placeholderTextColor={colors.textMuted}
+                    value={instructions}
+                    onChangeText={setInstructions}
+                    multiline
+                    numberOfLines={3}
+                  />
+                </View>
+              </>
+            ) : (
+              <View style={styles.emptyState}>
+                <Ionicons name="location-outline" size={48} color={colors.textMuted} />
+                <Text style={styles.emptyStateText}>Search for a location or drag the map</Text>
+                {currentLocation && (
+                  <TouchableOpacity
+                    onPress={handleUseCurrentLocation}
+                    style={styles.useCurrentButton}
+                  >
+                    <Ionicons name="locate" size={18} color={colors.onPrimary} />
+                    <Text style={styles.useCurrentButtonText}>Use Current Location</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+
+            <PrimaryButton
+              label="Confirm Location"
+              onPress={handleConfirm}
+              disabled={!canConfirm}
+              style={styles.confirmButton}
+            />
+          </ScrollView>
+    </View>
+      </KeyboardAvoidingView>
+    </Screen>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.bg,
   },
-  map: {
+  keyboardView: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.bg,
   },
-  mapPlaceholder: {
-    color: colors.textMuted,
-    ...typography.body2,
-  },
-  searchCard: {
+  searchContainer: {
     position: "absolute",
-    left: layout.gutter,
-    right: layout.gutter,
-    borderRadius: radius.pill,
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 1000,
     paddingHorizontal: layout.section,
-    paddingVertical: layout.compact,
-    backgroundColor: colors.surfaceLight,
-    shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 12,
+  },
+  searchBar: {
     flexDirection: "row",
     alignItems: "center",
+    backgroundColor: colors.surface1,
+    borderRadius: radius.pill,
+    paddingHorizontal: layout.section,
+    height: 48,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: colors.bg,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  iconButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
+  searchIcon: {
+    marginRight: layout.compact,
   },
   searchInput: {
     flex: 1,
     color: colors.textPrimary,
-    ...typography.body2,
+    ...typography.body,
+    paddingVertical: 0,
   },
-  resultsCard: {
-    position: "absolute",
-    top: layout.major + 40,
-    left: layout.gutter,
-    right: layout.gutter,
-    maxHeight: 220,
+  clearButton: {
+    marginLeft: layout.compact,
+    padding: layout.compact / 2,
+  },
+  searchLoader: {
+    marginLeft: layout.compact,
+  },
+  suggestionsContainer: {
+    marginTop: layout.compact,
+    backgroundColor: colors.surface1,
     borderRadius: radius.card,
-    backgroundColor: colors.surfaceLight,
-    paddingHorizontal: layout.section,
-    paddingVertical: layout.compact,
-    shadowColor: "#000",
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    maxHeight: 200,
+    shadowColor: colors.bg,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  suggestionRow: {
-    paddingVertical: layout.compact,
+  suggestionsList: {
+    maxHeight: 200,
+  },
+  suggestionItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: layout.section,
     borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
+    borderBottomColor: colors.border,
   },
-  suggestionTextWrap: {
-    gap: 2,
+  suggestionIcon: {
+    marginRight: layout.compact,
   },
-  suggestionPrimary: {
+  suggestionText: {
+    flex: 1,
+  },
+  suggestionMain: {
     color: colors.textPrimary,
-    ...typography.body2,
+    ...typography.body,
+    fontWeight: "600",
   },
   suggestionSecondary: {
     color: colors.textMuted,
-    ...typography.micro,
+    ...typography.body2,
+    marginTop: 2,
   },
-  emptyText: {
+  map: {
+    flex: 1,
+  },
+  mapPlaceholder: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: colors.surface1,
+  },
+  mapPlaceholderText: {
     color: colors.textMuted,
-    ...typography.micro,
+    ...typography.body2,
+    marginTop: layout.compact,
   },
-  bottomCard: {
+  bottomSheet: {
     position: "absolute",
-    left: layout.gutter,
-    right: layout.gutter,
-    bottom: layout.major,
-    borderRadius: radius.sheet,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: colors.bg,
+    borderTopLeftRadius: radius.card * 1.5,
+    borderTopRightRadius: radius.card * 1.5,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    maxHeight: "50%",
+    shadowColor: colors.bg,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 16,
+  },
+  bottomSheetContent: {
     padding: layout.section,
-    backgroundColor: colors.surface,
-    shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 14,
   },
-  bottomLabel: {
-    color: colors.textMuted,
-    ...typography.micro,
-    marginBottom: layout.compact / 2,
-  },
-  bottomTitle: {
-    color: colors.textPrimary,
-    ...typography.body,
-    fontWeight: "600",
-    marginBottom: layout.compact,
-  },
-  bottomSubtitle: {
-    color: colors.textMuted,
-    ...typography.micro,
+  locationHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
     marginBottom: layout.section,
   },
-  button: {
-    backgroundColor: colors.primary,
-    borderRadius: radius.pill,
-    paddingVertical: layout.compact,
-    alignItems: "center",
+  locationInfo: {
+    flex: 1,
+    marginRight: layout.compact,
+  },
+  locationName: {
+    color: colors.textPrimary,
+    ...typography.h3,
+    fontWeight: "700",
+    marginBottom: layout.compact / 2,
+  },
+  locationAddress: {
+    color: colors.textMuted,
+    ...typography.body2,
+  },
+  currentLocationButton: {
+    padding: layout.compact,
+    borderRadius: radius.button,
+    backgroundColor: colors.surface1,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  detailsSection: {
     marginTop: layout.section,
   },
-  buttonText: {
+  detailsLabel: {
+    color: colors.textSecondary,
+    ...typography.caption,
+    marginTop: layout.section,
+    marginBottom: layout.compact / 2,
+  },
+  detailsInput: {
+    backgroundColor: colors.surface1,
+    borderRadius: radius.button,
+    padding: layout.section,
+    color: colors.textPrimary,
+    ...typography.body,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  detailsInputMultiline: {
+    minHeight: 80,
+    textAlignVertical: "top",
+  },
+  emptyState: {
+    alignItems: "center",
+    paddingVertical: layout.major,
+  },
+  emptyStateText: {
+    color: colors.textMuted,
+    ...typography.body2,
+    marginTop: layout.compact,
+    textAlign: "center",
+  },
+  useCurrentButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.primary,
+    paddingHorizontal: layout.section,
+    paddingVertical: layout.compact,
+    borderRadius: radius.button,
+    marginTop: layout.section,
+  },
+  useCurrentButtonText: {
     color: colors.onPrimary,
     ...typography.body,
     fontWeight: "600",
+    marginLeft: layout.compact / 2,
   },
-  locateButton: {
-    position: "absolute",
-    right: layout.gutter,
-    bottom: layout.major * 2.2,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.surface,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
+  confirmButton: {
+    marginTop: layout.section,
   },
 });
 
 export default LocationPickerScreen;
-
-

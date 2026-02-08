@@ -38,7 +38,7 @@ import ProfilePreviewScreen from "./src/screens/ProfilePreviewScreen";
 import SafetySettingsScreen from "./src/screens/SafetySettingsScreen";
 import InviteFriendsScreen from "./src/screens/InviteFriendsScreen";
 import SubscriptionScreen from "./src/screens/SubscriptionScreen";
-import DevToolsScreen from "./src/screens/DevToolsScreen";
+import IdConnectionReviewScreen from "./src/screens/IdConnectionReviewScreen";
 
 const Stack = createStackNavigator<RootStackParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
@@ -70,7 +70,6 @@ const AppNavigator = () => {
         ) : profile?.onboarding_complete ? (
           <>
             <Stack.Screen name="Home" component={HomeTabs} />
-            {__DEV__ ? <Stack.Screen name="DevTools" component={DevToolsScreen} /> : null}
             <Stack.Screen name="People" component={PeopleScreen} />
             <Stack.Screen name="OutingDetails" component={OutingDetailsScreen} />
             <Stack.Screen name="CreateOuting" component={CreateOutingScreen} />
@@ -89,6 +88,7 @@ const AppNavigator = () => {
             <Stack.Screen name="SafetySettings" component={SafetySettingsScreen} />
             <Stack.Screen name="InviteFriends" component={InviteFriendsScreen} />
             <Stack.Screen name="Subscription" component={SubscriptionScreen} />
+            <Stack.Screen name="IdConnectionReview" component={IdConnectionReviewScreen} />
           </>
         ) : (
           <>

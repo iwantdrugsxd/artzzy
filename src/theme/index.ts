@@ -2,10 +2,10 @@
 import { spacing as spacingImport, layout as layoutImport } from "./spacing";
 
 // Import tokens (before exports to avoid hoisting issues)
-import tokensDefault, { tokens as tokensImport, typography as tokensTypography } from "./tokens";
+import tokensDefault, { tokens as tokensImport } from "./tokens";
 
 // Import legacy exports directly to ensure they're available
-import { colors as colorsImport } from "./colors";
+import colorsDefault, { colors as colorsImport } from "./colors";
 import { typography as typographyImport } from "./typography";
 import { shadows as shadowsImport } from "./shadows";
 import { radius as radiusImport } from "./radius";
@@ -16,10 +16,9 @@ export const layout = layoutImport;
 
 // Legacy exports (for backward compatibility - many files still use these)
 // Import and export directly to avoid re-export issues
-const resolvedColors = colorsImport ?? {};
+const resolvedColors = colorsImport ?? colorsDefault ?? {};
 export const colors = resolvedColors;
-const resolvedTypography = tokensTypography ?? typographyImport ?? {};
-export const typography = resolvedTypography;
+export const typography = typographyImport ?? {};
 export const shadows = shadowsImport;
 export const radius = radiusImport;
 
@@ -29,7 +28,7 @@ const resolvedTokens = tokensImport ?? tokensDefault ?? {};
 const safeTokens = {
   ...resolvedTokens,
   colors: resolvedTokens?.colors ?? resolvedColors,
-  typography: resolvedTokens?.typography ?? resolvedTypography,
+  typography: resolvedTokens?.typography ?? typographyImport ?? {},
   spacing: resolvedTokens?.spacing ?? spacingImport ?? {},
   radius: resolvedTokens?.radius ?? radiusImport ?? {},
   shadows: resolvedTokens?.shadows ?? shadowsImport ?? {},

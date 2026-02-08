@@ -40,6 +40,11 @@ export type Profile = {
   // Phase 4: Referral and premium
   referralCode?: string; // Unique referral code
   spotlightActiveUntil?: any; // Timestamp - when spotlight expires
+  plan?: "free" | "plus";
+  isPremium?: boolean;
+  isPro?: boolean;
+  // Connect by User ID
+  user_code?: string; // Unique user-visible ID (uppercase letters + numbers, 8 chars)
 };
 
 export type ProfileDraft = Omit<Profile, "user_id" | "email" | "created_at">;

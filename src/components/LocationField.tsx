@@ -9,6 +9,11 @@ export type LocationValue = {
   lat: number;
   lng: number;
   placeId: string;
+  // Optional fields for detailed address
+  addressLine2?: string;      // building/flat/apt
+  landmark?: string;          // landmark / nearby
+  instructions?: string;      // directions / access notes
+  fullAddress?: string;       // combined display string (optional)
 };
 
 type Props = {
@@ -42,6 +47,12 @@ const LocationField: React.FC<Props> = ({ value, onChange, onOpenMap }) => {
             <Text style={styles.selectedTitle}>{value.name}</Text>
             {value.address ? (
               <Text style={styles.selectedSubtitle}>{value.address}</Text>
+            ) : null}
+            {value.addressLine2 ? (
+              <Text style={styles.selectedSubtitle}>{value.addressLine2}</Text>
+            ) : null}
+            {value.landmark ? (
+              <Text style={styles.selectedSubtitle}>Near {value.landmark}</Text>
             ) : null}
           </View>
           {onOpenMap ? (

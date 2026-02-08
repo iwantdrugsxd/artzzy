@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { StyleSheet, Text, View, ScrollView, Pressable } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { StackScreenProps } from "@react-navigation/stack";
 import { RootStackParamList } from "../../types/navigation";
 import { colors, layout, typography, radius } from "../../theme";
@@ -21,8 +22,14 @@ const countWords = (text: string): number => {
   return text.trim().split(/\s+/).filter(word => word.length > 0).length;
 };
 
-const MIN_WORDS = 10;
-const MAX_CHARACTERS = 200;
+const MIN_WORDS = 1;
+const MAX_WORDS = 30;
+
+const limitWords = (text: string, maxWords: number) => {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return text;
+  return words.slice(0, maxWords).join(" ");
+};
 
 const PromptsScreen: React.FC<Props> = ({ navigation }) => {
   const { draft, updateDraft } = useAuth();
@@ -144,10 +151,9 @@ const PromptsScreen: React.FC<Props> = ({ navigation }) => {
                     <View style={styles.editSection}>
                       <TextField
                         value={tempAnswer}
-                        onChangeText={setTempAnswer}
-                        placeholder={`Write at least ${MIN_WORDS} words...`}
+                        onChangeText={(value) => setTempAnswer(limitWords(value, MAX_WORDS))}
+                        placeholder={`Write ${MIN_WORDS}-${MAX_WORDS} words...`}
                         multiline
-                        maxLength={MAX_CHARACTERS}
                         style={styles.answerInput}
                       />
                       <View style={styles.answerMeta}>
@@ -159,8 +165,8 @@ const PromptsScreen: React.FC<Props> = ({ navigation }) => {
                               : null,
                           ]}
                         >
-                          {countWords(tempAnswer)} words • {tempAnswer.length}/{MAX_CHARACTERS} chars
-                          {countWords(tempAnswer) < MIN_WORDS && tempAnswer.length > 0 && ` (min ${MIN_WORDS} words)`}
+                          {countWords(tempAnswer)} / {MAX_WORDS} words
+                          {countWords(tempAnswer) < MIN_WORDS && tempAnswer.length > 0 && ` (min ${MIN_WORDS})`}
                         </Text>
                         <Pressable onPress={() => saveAnswer(prompt.id)} style={styles.saveButton}>
                           <Text style={styles.saveText}>Save</Text>

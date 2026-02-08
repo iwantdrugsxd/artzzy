@@ -6,14 +6,25 @@ import {
   Alert,
   Pressable,
   ScrollView,
-  Animated as RNAnimated,
+  Dimensions,
   Modal,
   TouchableOpacity,
-  ImageBackground,
+  TextInput,
 } from "react-native";
 import { StackNavigationProp } from "@react-navigation/stack";
 import { useNavigation } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, {
+  Easing,
+  Extrapolate,
+  interpolate,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
 import { collection, getDocs, query, where, doc, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RootStackParamList } from "../types/navigation";
@@ -27,6 +38,7 @@ import Pill from "../components/Pill";
 import Skeleton from "../components/Skeleton";
 import EmptyState from "../components/EmptyState";
 import InlineError from "../components/InlineError";
+import { SwipeRibbonOverlay } from "../components/SwipeRibbonOverlay";
 import { vibeScore } from "../utils/vibeScore";
 import { useAuth } from "../context/AuthContext";
 import { logger } from "../utils/logger";
@@ -38,10 +50,19 @@ import { Toast } from "../components/ui/Toast";
 import { isProfileComplete } from "../utils/profileCompleteness";
 import PrimaryButton from "../components/PrimaryButton";
 import { interestGroups } from "../data/interests";
+import { idConnectionStorage, FoundUserProfile } from "../utils/idConnectionStorage";
+import Card from "../components/Card";
+import { ImageBackground } from "react-native";
+import { getPlanTier } from "../utils/connectionPolicy";
 
 type Nav = StackNavigationProp<RootStackParamList, "Home">;
 
 const vibeFilters = ["High Energy", "Chill", "Night Owl"];
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get("window");
+const SWIPE_X_THRESHOLD = 0.28 * SCREEN_W;
+const SWIPE_VX_THRESHOLD = 900;
+const SUPER_Y_THRESHOLD = -0.18 * SCREEN_H;
+const springConfig = { damping: 16, stiffness: 180, mass: 0.9 };
 
 // Phase 1: Discover filters
 type FilterState = {
@@ -66,7 +87,7 @@ type PendingAction =
 
 const PeopleScreen: React.FC = () => {
   const navigation = useNavigation<Nav>();
-  const { profile } = useAuth();
+  const { profile, user } = useAuth();
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [selectedFilter, setSelectedFilter] = useState<string | null>(null);
@@ -81,6 +102,45 @@ const PeopleScreen: React.FC = () => {
   // Phase 1: Discover filters
   const [discoverFilters, setDiscoverFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [showFilterModal, setShowFilterModal] = useState(false);
+  // Connect by ID
+  const [userCodeInput, setUserCodeInput] = useState("");
+  const [findingUser, setFindingUser] = useState(false);
+  const [sendingRequest, setSendingRequest] = useState(false);
+  const [userCodeError, setUserCodeError] = useState<string | null>(null);
+  const [foundUser, setFoundUser] = useState<{ uid: string; name: string; profile_photo_url?: string; city?: string } | null>(null);
+  const tx = useSharedValue(0);
+  const ty = useSharedValue(0);
+  const isAnimating = useSharedValue(false);
+  const isPlus = useMemo(() => getPlanTier(profile) === "plus", [profile]);
+
+  const handleSpotlightActivate = async () => {
+    if (!user || !profile) return;
+    if (!isPlus) {
+      Alert.alert(
+        "Premium required",
+        "Upgrade to activate Spotlight.",
+        [
+          { text: "Not now", style: "cancel" },
+          {
+            text: "Upgrade",
+            onPress: () => navigation.navigate("Subscription"),
+          },
+        ]
+      );
+      return;
+    }
+    try {
+      await updateDoc(doc(db, "users", user.id), {
+        spotlightActiveUntil: serverTimestamp(),
+      });
+      logger.info("spotlight.activated", { userId: user.id });
+      Alert.alert("Spotlight Activated", "Your profile is now boosted for 24 hours!");
+      setShowFilterModal(false);
+    } catch (error) {
+      logger.error("spotlight.activate.failed", { error });
+      Alert.alert("Error", "Failed to activate spotlight. Please try again.");
+    }
+  };
 
   const loadPeople = useCallback(async () => {
     if (!profile || !isProfileComplete(profile)) {
@@ -346,7 +406,17 @@ const PeopleScreen: React.FC = () => {
         );
         const code = decisionError?.code || decisionError?.message;
         if (code === "LIMIT" || code === "DAILY_LIMIT_REACHED") {
-          Alert.alert("Daily limit reached", "You’ve used today’s free vibes.");
+          Alert.alert(
+            "Daily limit reached",
+            "Upgrade to send more vibes today.",
+            [
+              { text: "Not now", style: "cancel" },
+              {
+                text: "Upgrade",
+                onPress: () => navigation.navigate("Subscription"),
+              },
+            ]
+          );
         } else if (type === "vibe") {
           showToast("Couldn’t vibe. Check connection.", "error");
         } else {
@@ -365,6 +435,106 @@ const PeopleScreen: React.FC = () => {
       timeoutId,
     });
   };
+
+  const commitSwipe = useCallback(
+    (decision: "vibe" | "skip" | "super") => {
+      "worklet";
+      if (isAnimating.value) return;
+      isAnimating.value = true;
+      const targetX =
+        decision === "vibe" ? SCREEN_W * 1.3 : decision === "skip" ? -SCREEN_W * 1.3 : 0;
+      const targetY = decision === "super" ? SUPER_Y_THRESHOLD * 1.3 : 0;
+      tx.value = withTiming(
+        targetX,
+        { duration: 240, easing: Easing.out(Easing.cubic) },
+        (finished) => {
+          if (finished) {
+            if (decision === "vibe") {
+              runOnJS(handleDecision)("vibe");
+            } else if (decision === "skip") {
+              runOnJS(handleDecision)("skip");
+            }
+          }
+          tx.value = 0;
+          ty.value = 0;
+          isAnimating.value = false;
+        }
+      );
+      ty.value = withTiming(targetY, { duration: 240, easing: Easing.out(Easing.cubic) });
+    },
+    [handleDecision, isAnimating, tx, ty]
+  );
+
+  const resetSwipe = useCallback(() => {
+    "worklet";
+    if (isAnimating.value) return;
+    isAnimating.value = true;
+    tx.value = withSpring(0, springConfig, () => {
+      isAnimating.value = false;
+    });
+    ty.value = withSpring(0, springConfig);
+  }, [isAnimating, tx, ty]);
+
+  const swipeGesture = useMemo(() => {
+    return Gesture.Pan()
+      .enabled(!buttonsDisabled)
+      .activeOffsetX([-6, 6])
+      .onUpdate((event) => {
+        if (isAnimating.value) return;
+        tx.value = event.translationX;
+        ty.value = event.translationY;
+      })
+      .onEnd((event) => {
+        if (isAnimating.value) return;
+        const like = tx.value > SWIPE_X_THRESHOLD || event.velocityX > SWIPE_VX_THRESHOLD;
+        const pass = tx.value < -SWIPE_X_THRESHOLD || event.velocityX < -SWIPE_VX_THRESHOLD;
+        const superSwipe =
+          ty.value < SUPER_Y_THRESHOLD && Math.abs(tx.value) < SWIPE_X_THRESHOLD * 0.65;
+        if (superSwipe) {
+          commitSwipe("super");
+          return;
+        }
+        if (like) {
+          commitSwipe("vibe");
+          return;
+        }
+        if (pass) {
+          commitSwipe("skip");
+          return;
+        }
+        resetSwipe();
+      });
+  }, [buttonsDisabled, commitSwipe, resetSwipe, isAnimating, tx, ty]);
+
+  const cardAnimatedStyle = useAnimatedStyle(() => {
+    const rotate = interpolate(tx.value, [-SCREEN_W, 0, SCREEN_W], [-12, 0, 12]);
+    const distance = Math.abs(tx.value) + Math.abs(ty.value);
+    const baseScale = interpolate(distance, [0, SCREEN_W], [1, 0.985], Extrapolate.CLAMP);
+    const superProgress = Math.min(
+      1,
+      Math.max(0, -ty.value / Math.abs(SUPER_Y_THRESHOLD || 1))
+    );
+    const scale = baseScale + superProgress * 0.02;
+    return {
+      transform: [
+        { translateX: tx.value },
+        { translateY: ty.value * 0.2 },
+        { rotate: `${rotate}deg` },
+        { scale },
+      ],
+    };
+  });
+
+  const cardOpacityStyle = useAnimatedStyle(() => {
+    const opacity = interpolate(
+      tx.value,
+      [-SCREEN_W * 0.7, 0, SCREEN_W * 0.7],
+      [0, 1, 0],
+      Extrapolate.CLAMP
+    );
+    return { opacity };
+  });
+
 
   const handleUndo = () => {
     if (!pendingAction) return;
@@ -391,35 +561,103 @@ const PeopleScreen: React.FC = () => {
               onPress={() => setShowFilterModal(true)}
             />
             <IconButton
+              icon={<Ionicons name="person" size={18} color={tokens.colors.text.secondary} />}
               onPress={() => navigation.navigate("MyProfile")}
-              style={styles.avatarButton}
-              pressedStyle={styles.avatarPressed}
-              icon={
-                profile?.profile_photo_url ? (
-                  <ImageBackground
-                    source={{ uri: profile.profile_photo_url }}
-                    style={styles.profileImage}
-                    imageStyle={styles.profileImageStyle}
-                  />
-                ) : (
-                  <Ionicons name="person" size={18} color={tokens.colors.text.secondary} />
-                )
-              }
             />
           </>
         }
         subheader={
-          <View style={styles.filterRow}>
-            {vibeFilters.map((filter) => (
-              <Pill
-                key={filter}
-                label={filter}
-                selected={selectedFilter === filter}
-                onPress={() =>
-                  setSelectedFilter(selectedFilter === filter ? null : filter)
-                }
-              />
-            ))}
+          <View>
+            {/* Connect by ID Search Bar */}
+            {profile && isProfileComplete(profile) ? (
+              <View style={styles.connectSearchWrap}>
+                <View style={styles.connectSearchBar}>
+                  <Ionicons
+                    name="search"
+                    size={18}
+                    color={tokens.colors.text.muted}
+                  />
+                  <TextInput
+                    style={styles.connectSearchInput}
+                    placeholder="Search by User ID"
+                    placeholderTextColor={tokens.colors.text.muted}
+                    value={userCodeInput}
+                    onChangeText={(text) => {
+                      // Auto-uppercase and filter to only allow alphanumeric
+                      const filtered = text.toUpperCase().replace(/[^A-Z0-9]/g, "");
+                      setUserCodeInput(filtered);
+                      setUserCodeError(null);
+                      // Clear found user when input changes
+                      setFoundUser(null);
+                    }}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    maxLength={10}
+                  />
+                  <Pressable
+                    style={[
+                      styles.connectSearchAction,
+                      (!userCodeInput.trim() || userCodeInput.trim().length < 8 || findingUser) && styles.connectSearchActionDisabled,
+                    ]}
+                    onPress={async () => {
+                      if (!user) return;
+                      const trimmed = userCodeInput.trim();
+                      if (!trimmed || trimmed.length < 8 || trimmed.length > 10) {
+                        setUserCodeError("User ID must be 8-10 characters");
+                        return;
+                      }
+                      setFindingUser(true);
+                      setUserCodeError(null);
+                      setFoundUser(null);
+                      try {
+                        const result = await idConnectionStorage.findUserByCode(trimmed);
+                        if (result.success && result.user) {
+                          // Prevent self-request
+                          if (result.user.uid === user.id) {
+                            setUserCodeError("You can't add yourself.");
+                            setFoundUser(null);
+                          } else {
+                            setFoundUser(result.user);
+                            setUserCodeError(null);
+                          }
+                        } else {
+                          setUserCodeError(result.error || "No user found.");
+                          setFoundUser(null);
+                        }
+                      } catch (err: any) {
+                        const errorMsg = err?.message || "Failed to find user";
+                        setUserCodeError(errorMsg);
+                        setFoundUser(null);
+                        showToast(errorMsg, "error");
+                      } finally {
+                        setFindingUser(false);
+                      }
+                    }}
+                    disabled={findingUser || !userCodeInput.trim() || userCodeInput.trim().length < 8}
+                  >
+                    <Text style={styles.connectSearchActionText}>
+                      {findingUser ? "..." : "Find"}
+                    </Text>
+                  </Pressable>
+                </View>
+                {userCodeError ? (
+                  <Text style={styles.connectSearchError}>{userCodeError}</Text>
+                ) : null}
+              </View>
+            ) : null}
+            {/* Vibe Filter Pills */}
+            <View style={styles.filterRow}>
+              {vibeFilters.map((filter) => (
+                <Pill
+                  key={filter}
+                  label={filter}
+                  selected={selectedFilter === filter}
+                  onPress={() =>
+                    setSelectedFilter(selectedFilter === filter ? null : filter)
+                  }
+                />
+              ))}
+            </View>
           </View>
         }
       />
@@ -430,6 +668,89 @@ const PeopleScreen: React.FC = () => {
           message={error}
           onRetry={loadPeople}
         />
+      ) : null}
+
+      {/* Preview Card - shown after successful Find */}
+      {foundUser ? (
+        <Card style={styles.previewCard} padding="lg">
+          <View style={styles.previewContent}>
+            <View style={styles.previewLeft}>
+              {foundUser.profile_photo_url ? (
+                <ImageBackground
+                  source={{ uri: foundUser.profile_photo_url }}
+                  style={styles.previewAvatar}
+                  imageStyle={styles.previewAvatarImage}
+                />
+              ) : (
+                <View style={styles.previewAvatarFallback}>
+                  <Text style={styles.previewAvatarFallbackText}>
+                    {foundUser.name[0]?.toUpperCase() || "?"}
+                  </Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.previewRight}>
+              <Text style={styles.previewName}>{foundUser.name}</Text>
+              {foundUser.city ? (
+                <Text style={styles.previewCity}>{foundUser.city}</Text>
+              ) : null}
+            </View>
+            <PrimaryButton
+              label="Connect"
+              onPress={async () => {
+                if (!profile || !user || !foundUser) return;
+                setSendingRequest(true);
+                setUserCodeError(null);
+                try {
+                  logger.info("people.connect.attempt", { 
+                    fromUid: user.id, 
+                    toUid: foundUser.uid 
+                  });
+                  const result = await idConnectionStorage.sendIdConnectionRequest({
+                    fromUid: user.id,
+                    toUid: foundUser.uid,
+                    fromProfile: profile,
+                  });
+                  if (result.status === "sent") {
+                    setUserCodeInput("");
+                    setFoundUser(null);
+                    showToast("Request sent!", "success");
+                    haptics.medium();
+                    logger.info("people.connect.success", { 
+                      fromUid: user.id, 
+                      toUid: foundUser.uid 
+                    });
+                  } else {
+                    const errorMsg = result.error || "Failed to send request";
+                    setUserCodeError(errorMsg);
+                    showToast(errorMsg, "error");
+                    logger.error("people.connect.failed", { 
+                      fromUid: user.id, 
+                      toUid: foundUser.uid,
+                      error: errorMsg 
+                    });
+                  }
+                } catch (err: any) {
+                  const errorMsg = err?.message || err?.code || "Failed to send request";
+                  setUserCodeError(errorMsg);
+                  showToast(errorMsg, "error");
+                  logger.error("people.connect.exception", { 
+                    error: err, 
+                    fromUid: user.id, 
+                    toUid: foundUser.uid,
+                    code: err?.code,
+                    message: err?.message 
+                  });
+                } finally {
+                  setSendingRequest(false);
+                }
+              }}
+              disabled={sendingRequest}
+              loading={sendingRequest}
+              style={styles.connectButton}
+            />
+          </View>
+        </Card>
       ) : null}
 
       <View style={styles.body}>
@@ -468,28 +789,33 @@ const PeopleScreen: React.FC = () => {
             ]}
           >
             <View style={styles.cardWrap}>
-              <ProfileCard
-                name={current.name}
-                age={currentAge ?? current.age}
-                height={current.height}
-                city={current.city}
-                country={current.country}
-                bio={currentBio}
-                photo={current.photo}
-                photos={current.photos}
-                interests={current.interests}
-                score={current.match.score}
-                tags={current.match.tags}
-                showDetails
-                vibeHighlights={vibeHighlights}
-                memberSince={current.created_at}
-                quickBadges={current.quick_badges}
-                prompts={current.prompts}
-                work={current.work}
-                education={current.education}
-                isVerified={current.isVerified}
-                matchReasons={current.matchReasons || []}
-              />
+              <GestureDetector gesture={swipeGesture}>
+                <Animated.View style={[cardAnimatedStyle, cardOpacityStyle]}>
+                  <SwipeRibbonOverlay tx={tx} threshold={SWIPE_X_THRESHOLD} />
+                  <ProfileCard
+                    name={current.name}
+                    age={currentAge ?? current.age}
+                    height={current.height}
+                    city={current.city}
+                    country={current.country}
+                    bio={currentBio}
+                    photo={current.photo}
+                    photos={current.photos}
+                    interests={current.interests}
+                    score={current.match.score}
+                    tags={current.match.tags}
+                    showDetails
+                    vibeHighlights={vibeHighlights}
+                    memberSince={current.created_at}
+                    quickBadges={current.quick_badges}
+                    prompts={current.prompts}
+                    work={current.work}
+                    education={current.education}
+                    isVerified={current.isVerified}
+                    matchReasons={current.matchReasons || []}
+                  />
+                </Animated.View>
+              </GestureDetector>
             </View>
           </ScrollView>
         ) : (
@@ -502,32 +828,6 @@ const PeopleScreen: React.FC = () => {
           </View>
         )}
       </View>
-
-      {current ? (
-        <View
-          style={[
-            styles.footer,
-            { paddingBottom: insets.bottom + tokens.spacing.lg },
-          ]}
-        >
-          <View style={styles.actions}>
-            <ActionButton
-              label="Pass"
-              icon="close"
-              tone="surface"
-              disabled={buttonsDisabled}
-              onPress={() => handleDecision("skip")}
-            />
-            <ActionButton
-              label="Vibe"
-              icon="sparkles"
-              tone="primary"
-              disabled={buttonsDisabled}
-              onPress={() => handleDecision("vibe")}
-            />
-          </View>
-        </View>
-      ) : null}
 
       {pendingAction ? (
         <View
@@ -656,17 +956,21 @@ const PeopleScreen: React.FC = () => {
                   <Text style={styles.premiumLabel}>Premium Filters</Text>
                 </View>
                 <Text style={styles.filterHint}>
-                  Upgrade to Premium to unlock advanced radius filters and priority visibility.
+                  {isPlus
+                    ? "Premium active. Enjoy advanced filters and priority visibility."
+                    : "Upgrade to Premium to unlock advanced radius filters and priority visibility."}
                 </Text>
-                <TouchableOpacity
-                  style={styles.premiumCta}
-                  onPress={() => {
-                    setShowFilterModal(false);
-                    navigation.navigate("Subscription");
-                  }}
-                >
-                  <Text style={styles.premiumCtaText}>Upgrade to Premium</Text>
-                </TouchableOpacity>
+                {!isPlus ? (
+                  <TouchableOpacity
+                    style={styles.premiumCta}
+                    onPress={() => {
+                      setShowFilterModal(false);
+                      navigation.navigate("Subscription");
+                    }}
+                  >
+                    <Text style={styles.premiumCtaText}>Upgrade to Premium</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
 
               {/* Phase 4: Spotlight Feature */}
@@ -681,24 +985,13 @@ const PeopleScreen: React.FC = () => {
                     <Text style={styles.spotlightTitle}>Spotlight</Text>
                   </View>
                   <Text style={styles.spotlightText}>
-                    Boost your visibility for 24 hours. Get seen by more people!
+                    {isPlus
+                      ? "Boost your visibility for 24 hours. Get seen by more people!"
+                      : "Premium required to boost visibility for 24 hours."}
                   </Text>
                   <PrimaryButton
-                    label="Activate Spotlight"
-                    onPress={async () => {
-                      if (!user || !profile) return;
-                      try {
-                        await updateDoc(doc(db, "users", user.id), {
-                          spotlightActiveUntil: serverTimestamp(),
-                        });
-                        logger.info("spotlight.activated", { userId: user.id });
-                        Alert.alert("Spotlight Activated", "Your profile is now boosted for 24 hours!");
-                        setShowFilterModal(false);
-                      } catch (error) {
-                        logger.error("spotlight.activate.failed", { error });
-                        Alert.alert("Error", "Failed to activate spotlight. Please try again.");
-                      }
-                    }}
+                    label={isPlus ? "Activate Spotlight" : "Upgrade to Activate"}
+                    onPress={handleSpotlightActivate}
                     style={styles.spotlightButton}
                   />
                 </View>
@@ -724,78 +1017,9 @@ const PeopleScreen: React.FC = () => {
   );
 };
 
-const ActionButton = ({
-  label,
-  icon,
-  tone,
-  onPress,
-  disabled = false,
-}: {
-  label: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  tone: "surface" | "primary";
-  onPress: () => void;
-  disabled?: boolean;
-}) => {
-  const scale = useRef(new RNAnimated.Value(1)).current;
-
-  const handlePressIn = () => {
-    RNAnimated.spring(scale, { toValue: 0.96, useNativeDriver: true }).start();
-  };
-
-  const handlePressOut = () => {
-    RNAnimated.spring(scale, { toValue: 1, useNativeDriver: true }).start();
-  };
-
-  return (
-    <RNAnimated.View style={{ transform: [{ scale }] }}>
-      <Pressable
-        onPress={onPress}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        style={[
-          styles.actionButton,
-          tone === "primary" ? styles.actionPrimary : styles.actionSurface,
-          disabled && { opacity: 0.6 },
-        ]}
-        disabled={disabled}
-      >
-        <Ionicons
-          name={icon}
-          size={18}
-          color={tone === "primary" ? tokens.colors.bg.base : tokens.colors.text.primary}
-        />
-        <Text
-          style={[
-            styles.actionText,
-            tone === "primary" ? styles.actionTextPrimary : null,
-          ]}
-        >
-          {label}
-        </Text>
-      </Pressable>
-    </RNAnimated.View>
-  );
-};
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  avatarButton: {
-    borderWidth: 1,
-    borderColor: tokens.colors.transparent,
-  },
-  avatarPressed: {
-    borderColor: tokens.colors.primary.solid,
-    ...tokens.shadows.glow.soft,
-  },
-  profileImage: {
-    width: 32,
-    height: 32,
-  },
-  profileImageStyle: {
-    borderRadius: 16,
   },
   emptyContainer: {
     flex: 1,
@@ -820,46 +1044,6 @@ const styles = StyleSheet.create({
   },
   cardWrap: {
     alignItems: "center",
-  },
-  actions: {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: tokens.spacing.lg,
-    marginBottom: tokens.spacing.lg,
-  },
-  actionButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    height: 52,
-    borderRadius: tokens.radius.button,
-    paddingHorizontal: tokens.spacing.lg,
-    gap: tokens.spacing.sm,
-    minWidth: 120,
-    ...tokens.shadows.card.raised,
-  },
-  actionSurface: {
-    backgroundColor: colors.surface2,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  actionPrimary: {
-    backgroundColor: tokens.colors.primary.solid,
-  },
-  actionText: {
-    color: tokens.colors.text.primary,
-    ...tokens.typography.body,
-    fontWeight: "600",
-  },
-  actionTextPrimary: {
-    color: tokens.colors.bg.base,
-  },
-  footer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingTop: tokens.spacing.lg,
   },
   centered: {
     alignItems: "center",
@@ -1078,6 +1262,101 @@ const styles = StyleSheet.create({
   },
   spotlightButton: {
     marginTop: tokens.spacing.sm,
+  },
+  // Connect by ID Search Bar
+  connectSearchWrap: {
+    marginTop: tokens.spacing.sm,
+    marginBottom: tokens.spacing.md,
+  },
+  connectSearchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.surface2,
+    borderRadius: 999,
+    height: 44,
+    paddingHorizontal: tokens.spacing.md,
+    borderWidth: 1,
+    borderColor: colors.divider,
+  },
+  connectSearchInput: {
+    flex: 1,
+    color: tokens.colors.text.primary,
+    fontSize: 14,
+    paddingVertical: 0,
+    marginLeft: 8,
+  },
+  connectSearchAction: {
+    paddingHorizontal: tokens.spacing.md,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: colors.primary,
+  },
+  connectSearchActionDisabled: {
+    opacity: 0.5,
+  },
+  connectSearchActionText: {
+    color: colors.textPrimary,
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  connectSearchError: {
+    color: colors.danger,
+    fontSize: 12,
+    marginTop: 6,
+    marginLeft: 6,
+  },
+  // Preview Card
+  previewCard: {
+    marginHorizontal: tokens.spacing.xl,
+    marginTop: tokens.spacing.md,
+    marginBottom: tokens.spacing.md,
+  },
+  previewContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: tokens.spacing.md,
+  },
+  previewLeft: {
+    width: 52,
+    height: 52,
+  },
+  previewAvatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    overflow: "hidden",
+  },
+  previewAvatarImage: {
+    borderRadius: 26,
+  },
+  previewAvatarFallback: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: colors.surface2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  previewAvatarFallbackText: {
+    color: colors.textPrimary,
+    ...tokens.typography.body,
+    fontWeight: "600",
+  },
+  previewRight: {
+    flex: 1,
+    gap: tokens.spacing.compact / 2,
+  },
+  previewName: {
+    color: tokens.colors.text.primary,
+    ...tokens.typography.body,
+    fontWeight: "600",
+  },
+  previewCity: {
+    color: tokens.colors.text.muted,
+    ...tokens.typography.micro,
+  },
+  connectButton: {
+    minWidth: 100,
   },
 });
 

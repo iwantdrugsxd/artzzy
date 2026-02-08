@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -6,11 +6,13 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Pressable,
   View,
   FlatList,
   Alert,
   Modal,
   ScrollView,
+  ImageBackground,
 } from "react-native";
 import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
@@ -30,12 +32,15 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RootStackParamList } from "../types/navigation";
-import { colors, tokens, spacing } from "../theme";
+import { colors, spacing, tokens } from "../theme";
 import { useAuth } from "../context/AuthContext";
 import { db } from "../firebaseApp";
 import { connectionStorage } from "../utils/connectionStorage";
 import { DirectChatMessage } from "../types/directChat";
 import { logger } from "../utils/logger";
+import { vibeQuestions } from "../data/vibeQuestions";
+import PhotoCarousel from "../components/PhotoCarousel";
+import Pill from "../components/Pill";
 
 type Route = RouteProp<RootStackParamList, "DirectChat">;
 type Nav = StackNavigationProp<RootStackParamList, "DirectChat">;
@@ -55,6 +60,7 @@ const DirectChatScreen: React.FC = () => {
   const [otherTyping, setOtherTyping] = useState(false);
   const [lastReadAt, setLastReadAt] = useState<any>(null);
   const [showOptionsModal, setShowOptionsModal] = useState(false);
+  const [showProfilePreview, setShowProfilePreview] = useState(false);
   const [otherProfile, setOtherProfile] = useState<any>(null);
   const [icebreakers, setIcebreakers] = useState<string[]>([]);
   const flatListRef = useRef<FlatList<DirectChatMessage>>(null);
@@ -313,41 +319,62 @@ const DirectChatScreen: React.FC = () => {
     );
   };
 
-  const renderItem = ({ item }: { item: DirectChatMessage }) => {
+  const renderItem = ({ item, index }: { item: DirectChatMessage; index: number }) => {
     if (item.type === "system") {
       return (
-        <View style={styles.systemRow}>
+        <View style={styles.systemPill}>
           <Text style={styles.systemText}>{item.text}</Text>
         </View>
       );
     }
     const mine = item.senderUid === user?.id;
     const createdAt = item.createdAt?.toDate ? item.createdAt.toDate() : null;
+    
+    // Check if previous message is from same sender (for grouped spacing)
+    const prevMessage = index > 0 ? messages[index - 1] : null;
+    const isGrouped = prevMessage && 
+      prevMessage.type !== "system" && 
+      prevMessage.senderUid === item.senderUid;
+    
     // Phase 3: Check if message is read
     const isRead = mine && lastReadAt && createdAt && lastReadAt.toDate && 
       lastReadAt.toDate().getTime() >= createdAt.getTime();
+    
     return (
-      <View style={[styles.messageRow, mine && styles.messageRowRight]}>
-        <View style={[styles.bubble, mine && styles.bubbleMine]}>
-          <Text style={[styles.messageText, mine && styles.messageTextMine]}>
+      <View style={[
+        styles.messageRow, 
+        mine ? styles.messageRowMine : styles.messageRowTheirs,
+        isGrouped && styles.messageRowGrouped
+      ]}>
+        <View style={[
+          styles.bubble,
+          mine ? styles.bubbleMine : styles.bubbleTheirs
+        ]}>
+          <Text style={[
+            styles.bubbleText,
+            mine && styles.bubbleTextMine
+          ]}>
             {item.text}
           </Text>
-          <View style={styles.messageFooter}>
-            {createdAt && (
-              <Text style={[styles.timeText, mine && styles.timeTextMine]}>
-                {formatTime(createdAt)}
-              </Text>
-            )}
-            {/* Phase 3: Read receipt */}
-            {mine && (
-              <Ionicons
-                name={isRead ? "checkmark-done" : "checkmark"}
-                size={14}
-                color={isRead ? tokens.colors.primary.solid : tokens.colors.text.subtle}
-                style={styles.readReceipt}
-              />
-            )}
-          </View>
+        </View>
+        <View style={[
+          styles.bubbleTimeRow,
+          mine && styles.bubbleTimeRowMine
+        ]}>
+          {createdAt && (
+            <Text style={styles.bubbleTime}>
+              {formatTime(createdAt)}
+            </Text>
+          )}
+          {/* Phase 3: Read receipt */}
+          {mine && (
+            <Ionicons
+              name={isRead ? "checkmark-done" : "checkmark"}
+              size={12}
+              color={isRead ? tokens.colors.primary.solid : tokens.colors.text.subtle}
+              style={styles.readReceipt}
+            />
+          )}
         </View>
       </View>
     );
@@ -361,7 +388,71 @@ const DirectChatScreen: React.FC = () => {
     return `${displayHours}:${minutes.toString().padStart(2, "0")} ${ampm}`;
   };
 
-  const title = loading ? "Chat" : otherName;
+  // Helper to calculate age from birthdate
+  const getAge = (birthdate?: string) => {
+    if (!birthdate) return null;
+    const date = new Date(birthdate);
+    if (Number.isNaN(date.getTime())) return null;
+    const diff = Date.now() - date.getTime();
+    const ageDate = new Date(diff);
+    return Math.abs(ageDate.getUTCFullYear() - 1970);
+  };
+
+  // Build profile card data from otherProfile
+  const profileCardData = useMemo(() => {
+    if (!otherProfile) {
+      return null;
+    }
+
+    const otherVibeAnswers = (otherProfile.vibe_answers as Record<string, string>) || {};
+    
+    // Compute vibe highlights (same logic as PeopleScreen)
+    const vibeHighlights = (() => {
+      const entries = Object.entries(otherVibeAnswers);
+      if (!entries.length) return [];
+
+      const byKey: Record<string, string> = {};
+      vibeQuestions.forEach((q) => {
+        const answer = otherVibeAnswers[q.key];
+        if (!answer) return;
+        const opt = q.options.find((o) => o.value === answer);
+        if (opt) {
+          byKey[q.key] = `${q.title}: ${opt.label}`;
+        } else {
+          byKey[q.key] = `${q.title}: ${answer}`;
+        }
+      });
+
+      return Object.values(byKey).slice(0, 3);
+    })();
+
+    const photo = otherProfile.profile_photo_url || otherProfile.primaryPhotoUrl || "";
+    const photos = otherProfile.profilePhotoUrls || (photo ? [photo] : []);
+
+    return {
+      name: otherProfile.name || "Guest",
+      age: getAge(otherProfile.birthdate),
+      height: otherProfile.height,
+      city: otherProfile.city,
+      country: otherProfile.country,
+      bio: otherProfile.bio || "",
+      photo,
+      photos,
+      interests: otherProfile.interests || [],
+      score: 0, // No match score in direct chat context
+      tags: [], // No tags in direct chat context
+      vibeHighlights,
+      quickBadges: otherProfile.quick_badges || [],
+      prompts: otherProfile.prompts || [],
+      work: otherProfile.work,
+      education: otherProfile.education,
+      isVerified: otherProfile.isVerified || false,
+      memberSince: otherProfile.created_at,
+    };
+  }, [otherProfile]);
+
+  const otherPhoto = otherProfile?.profile_photo_url || otherProfile?.primaryPhotoUrl;
+  const headerSubtitle = otherTyping ? "typing..." : "Tap to view profile";
 
   return (
     <KeyboardAvoidingView
@@ -369,23 +460,49 @@ const DirectChatScreen: React.FC = () => {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
       keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
     >
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+      <View style={[styles.headerBar, { paddingTop: insets.top + 8 }]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBackButton}>
           <Ionicons name="arrow-back" size={22} color={tokens.colors.text.primary} />
         </TouchableOpacity>
-        <View style={styles.headerBody}>
-          <Text style={styles.title}>{title}</Text>
-          {/* Phase 3: Typing indicator */}
-          {otherTyping && (
-            <Text style={styles.typingIndicator}>typing...</Text>
-          )}
-        </View>
+        
         <TouchableOpacity
-          onPress={() => setShowOptionsModal(true)}
-          style={styles.optionsButton}
+          style={styles.headerCenter}
+          onPress={() => {
+            setShowProfilePreview(true);
+          }}
+          activeOpacity={0.7}
         >
-          <Ionicons name="ellipsis-vertical" size={20} color={tokens.colors.text.primary} />
+          {otherPhoto ? (
+            <ImageBackground
+              source={{ uri: otherPhoto }}
+              style={styles.headerAvatar}
+              imageStyle={styles.headerAvatarImage}
+            />
+          ) : (
+            <View style={styles.headerAvatarFallback}>
+              <Text style={styles.headerAvatarFallbackText}>
+                {otherName[0]?.toUpperCase() || "?"}
+              </Text>
+            </View>
+          )}
+          <View style={styles.headerNameContainer}>
+            <Text style={styles.headerName} numberOfLines={1}>
+              {loading ? "Chat" : otherName}
+            </Text>
+            <Text style={styles.headerSubtitle} numberOfLines={1}>
+              {headerSubtitle}
+            </Text>
+          </View>
         </TouchableOpacity>
+        
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            onPress={() => setShowOptionsModal(true)}
+            style={styles.headerActionButton}
+          >
+            <Ionicons name="ellipsis-vertical" size={20} color={tokens.colors.text.primary} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <FlatList
@@ -393,10 +510,15 @@ const DirectChatScreen: React.FC = () => {
         data={messages}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[
+          styles.list,
+          { paddingBottom: insets.bottom + 80 }
+        ]}
+        style={styles.listContainer}
         onContentSizeChange={() =>
           flatListRef.current?.scrollToEnd({ animated: false })
         }
+        showsVerticalScrollIndicator={false}
       />
 
       {expired && (
@@ -430,18 +552,24 @@ const DirectChatScreen: React.FC = () => {
         </View>
       )}
 
-      <View style={styles.inputRow}>
-        <TextInput
-          style={[styles.input, expired && styles.inputDisabled]}
-          value={text}
-          onChangeText={handleTextChange}
-          onFocus={handleInputFocus}
-          onBlur={handleInputBlur}
-          editable={!expired}
-          placeholder={expired ? "Chat closed" : "Say hi..."}
-          placeholderTextColor={colors.textSubtle}
-          multiline
-        />
+      <View style={[
+        styles.inputBar,
+        { paddingBottom: insets.bottom + 8 }
+      ]}>
+        <View style={styles.inputFieldContainer}>
+          <TextInput
+            style={[styles.inputField, expired && styles.inputFieldDisabled]}
+            value={text}
+            onChangeText={handleTextChange}
+            onFocus={handleInputFocus}
+            onBlur={handleInputBlur}
+            editable={!expired}
+            placeholder={expired ? "Chat closed" : "Say hi…"}
+            placeholderTextColor={tokens.colors.text.subtle}
+            multiline
+            maxLength={500}
+          />
+        </View>
         <TouchableOpacity
           style={[
             styles.sendButton,
@@ -449,10 +577,182 @@ const DirectChatScreen: React.FC = () => {
           ]}
           onPress={handleSend}
           disabled={!text.trim() || expired}
+          activeOpacity={0.7}
         >
-          <Text style={styles.sendText}>Send</Text>
+          <Ionicons
+            name="paper-plane"
+            size={20}
+            color={(!text.trim() || expired) ? tokens.colors.text.subtle : tokens.colors.primary.onPrimary}
+          />
         </TouchableOpacity>
       </View>
+
+      {/* Profile Preview Modal - Full Screen Sheet */}
+      <Modal
+        visible={showProfilePreview}
+        transparent={false}
+        animationType="slide"
+        onRequestClose={() => setShowProfilePreview(false)}
+      >
+        <View style={[styles.profileSheet, { paddingTop: insets.top }]}>
+          {/* Fixed Header */}
+          <View style={styles.profileHeader}>
+            <TouchableOpacity
+              style={styles.profileHeaderClose}
+              onPress={() => setShowProfilePreview(false)}
+            >
+              <Ionicons name="close" size={24} color={tokens.colors.text.primary} />
+            </TouchableOpacity>
+            <Text style={styles.profileHeaderTitle}>Profile</Text>
+            <View style={styles.profileHeaderRight} />
+          </View>
+
+          {/* Scrollable Content */}
+          <ScrollView
+            style={styles.profileScrollView}
+            contentContainerStyle={[
+              styles.profileScrollContent,
+              { paddingBottom: insets.bottom + tokens.spacing.xl }
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
+            {profileCardData ? (
+              <>
+                {/* Avatar Section */}
+                <View style={styles.profileAvatarWrap}>
+                  {profileCardData.photo ? (
+                    <ImageBackground
+                      source={{ uri: profileCardData.photo }}
+                      style={styles.profileAvatar}
+                      imageStyle={styles.profileAvatarImage}
+                    />
+                  ) : (
+                    <View style={styles.profileAvatarFallback}>
+                      <Text style={styles.profileAvatarFallbackText}>
+                        {profileCardData.name[0]?.toUpperCase() || "?"}
+                      </Text>
+                    </View>
+                  )}
+                  {profileCardData.isVerified && (
+                    <View style={styles.profileVerifiedBadge}>
+                      <Ionicons name="checkmark-circle" size={20} color={tokens.colors.primary.solid} />
+                    </View>
+                  )}
+                </View>
+
+                {/* Name + Age */}
+                <View style={styles.profileNameSection}>
+                  <Text style={styles.profileName}>
+                    {profileCardData.name}
+                    {profileCardData.age ? `, ${profileCardData.age}` : ""}
+                  </Text>
+                  {(profileCardData.city || profileCardData.country) && (
+                    <Text style={styles.profileLocation}>
+                      {[profileCardData.city, profileCardData.country].filter(Boolean).join(", ")}
+                    </Text>
+                  )}
+                  {profileCardData.height && (
+                    <Text style={styles.profileMeta}>{profileCardData.height}</Text>
+                  )}
+                  {(profileCardData.work || profileCardData.education) && (
+                    <Text style={styles.profileMeta}>
+                      {[profileCardData.work, profileCardData.education].filter(Boolean).join(" • ")}
+                    </Text>
+                  )}
+                </View>
+
+                {/* Quick Badges */}
+                {profileCardData.quickBadges && profileCardData.quickBadges.length > 0 && (
+                  <View style={styles.profileSection}>
+                    <View style={styles.profileBadgesRow}>
+                      {profileCardData.quickBadges.slice(0, 6).map((badge, idx) => (
+                        <View key={idx} style={styles.profileBadge}>
+                          <Text style={styles.profileBadgeText}>{badge}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+
+                {/* Photo Carousel */}
+                {profileCardData.photos && profileCardData.photos.length > 0 && (
+                  <View style={styles.profileSection}>
+                    <PhotoCarousel
+                      photos={profileCardData.photos}
+                      height={320}
+                      containerStyle={styles.profileCarousel}
+                    />
+                  </View>
+                )}
+
+                {/* About Section */}
+                {profileCardData.bio && (
+                  <View style={styles.profileSection}>
+                    <View style={styles.sectionHeader}>
+                      <View style={styles.sectionAccent} />
+                      <Text style={styles.sectionTitle}>ABOUT</Text>
+                    </View>
+                    <Text style={styles.aboutText}>{profileCardData.bio}</Text>
+                    <View style={styles.sectionDivider} />
+                  </View>
+                )}
+
+                {/* Prompts Section */}
+                {profileCardData.prompts && profileCardData.prompts.length > 0 && (
+                  <View style={styles.profileSection}>
+                    <View style={styles.sectionHeader}>
+                      <View style={styles.sectionAccent} />
+                      <Text style={styles.sectionTitle}>PROMPTS</Text>
+                    </View>
+                    {profileCardData.prompts.map((prompt: any, idx: number) => (
+                      <View key={prompt.id || idx} style={styles.promptCard}>
+                        <Text style={styles.promptTitle}>{prompt.question}</Text>
+                        <Text style={styles.promptAnswer}>{prompt.answer}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Interests Section */}
+                {profileCardData.interests && profileCardData.interests.length > 0 && (
+                  <View style={styles.profileSection}>
+                    <View style={styles.sectionHeader}>
+                      <View style={styles.sectionAccent} />
+                      <Text style={styles.sectionTitle}>INTERESTS</Text>
+                    </View>
+                    <View style={styles.interestsWrap}>
+                      {profileCardData.interests.map((interest, idx) => (
+                        <View key={idx} style={styles.interestPill}>
+                          <Text style={styles.interestText}>{interest}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+
+                {/* Vibe Highlights */}
+                {profileCardData.vibeHighlights && profileCardData.vibeHighlights.length > 0 && (
+                  <View style={styles.profileSection}>
+                    <View style={styles.sectionHeader}>
+                      <View style={styles.sectionAccent} />
+                      <Text style={styles.sectionTitle}>VIBE</Text>
+                    </View>
+                    {profileCardData.vibeHighlights.map((highlight, idx) => (
+                      <Text key={idx} style={styles.profileVibeItem}>
+                        {highlight}
+                      </Text>
+                    ))}
+                  </View>
+                )}
+              </>
+            ) : (
+              <View style={styles.profileUnavailable}>
+                <Text style={styles.profileUnavailableText}>Profile unavailable</Text>
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
 
       {/* Phase 3: Options Modal */}
       <Modal
@@ -466,7 +766,7 @@ const DirectChatScreen: React.FC = () => {
           activeOpacity={1}
           onPress={() => setShowOptionsModal(false)}
         >
-          <View style={[styles.sheetContent, { paddingBottom: insets.bottom + spacing(2) }]}>
+          <View style={[styles.sheetContent, { paddingBottom: insets.bottom + tokens.spacing.lg }]}>
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>Options</Text>
             <TouchableOpacity
@@ -511,75 +811,161 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: tokens.colors.bg.base,
   },
-  header: {
+  // Header styles
+  headerBar: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: tokens.spacing.xl,
-    paddingTop: tokens.spacing.lg,
-    paddingBottom: tokens.spacing.sm,
+    paddingHorizontal: tokens.spacing.lg,
+    paddingBottom: tokens.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.colors.overlay.glassMedium,
+    backgroundColor: tokens.colors.bg.base,
+    minHeight: 56,
   },
-  backButton: {
-    paddingRight: tokens.spacing.sm,
+  headerBackButton: {
+    padding: tokens.spacing.sm,
+    marginRight: tokens.spacing.sm,
   },
-  headerBody: {
+  headerCenter: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: tokens.spacing.md,
+  },
+  headerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    overflow: "hidden",
+  },
+  headerAvatarImage: {
+    borderRadius: 20,
+  },
+  headerAvatarFallback: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: tokens.colors.bg.raised,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerAvatarFallbackText: {
+    color: tokens.colors.text.primary,
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  headerNameContainer: {
+    flex: 1,
+    minWidth: 0,
+  },
+  headerName: {
+    color: tokens.colors.text.primary,
+    fontSize: 16,
+    fontWeight: "600",
+    lineHeight: 20,
+  },
+  headerSubtitle: {
+    color: tokens.colors.text.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: tokens.spacing.sm,
+  },
+  headerActionButton: {
+    padding: tokens.spacing.sm,
+  },
+  // List styles
+  listContainer: {
     flex: 1,
   },
-  title: {
-    color: tokens.colors.text.primary,
-    ...tokens.typography.h3,
-  },
   list: {
-    paddingHorizontal: tokens.spacing.xl,
-    paddingVertical: 12,
+    paddingHorizontal: tokens.spacing.lg,
+    paddingTop: tokens.spacing.md,
+    paddingBottom: tokens.spacing.lg,
   },
+  // Message row styles
   messageRow: {
-    flexDirection: "row",
-    marginBottom: 2,
+    marginBottom: 6,
     paddingHorizontal: 4,
   },
-  messageRowRight: {
-    justifyContent: "flex-end",
+  messageRowMine: {
+    alignItems: "flex-end",
   },
+  messageRowTheirs: {
+    alignItems: "flex-start",
+  },
+  messageRowGrouped: {
+    marginTop: 2,
+  },
+  // Bubble styles
   bubble: {
     maxWidth: "75%",
-    borderRadius: 22,
     paddingHorizontal: 14,
-    paddingVertical: 8,
-    backgroundColor: tokens.colors.bg.raised,
-    borderBottomLeftRadius: 4,
+    paddingVertical: 10,
   },
   bubbleMine: {
     backgroundColor: tokens.colors.primary.solid,
-    borderBottomLeftRadius: 22,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderBottomLeftRadius: 20,
     borderBottomRightRadius: 4,
   },
-  messageText: {
-    color: tokens.colors.text.primary,
+  bubbleTheirs: {
+    backgroundColor: "#1A1A1A",
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 20,
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
+  },
+  bubbleText: {
+    color: "#FFFFFF",
     fontSize: 15,
     lineHeight: 20,
     fontWeight: "400",
   },
-  messageTextMine: {
+  bubbleTextMine: {
     color: tokens.colors.primary.onPrimary,
   },
-  timeText: {
+  bubbleTimeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+    paddingHorizontal: 4,
+  },
+  bubbleTimeRowMine: {
+    justifyContent: "flex-end",
+  },
+  bubbleTime: {
     color: tokens.colors.text.subtle,
     fontSize: 11,
     lineHeight: 14,
     fontWeight: "400",
-    marginTop: 4,
-    alignSelf: "flex-end",
   },
-  timeTextMine: {
-    color: tokens.colors.text.muted,
+  readReceipt: {
+    marginLeft: 4,
   },
-  systemRow: {
+  // System message styles
+  systemPill: {
+    alignSelf: "center",
     alignItems: "center",
-    marginVertical: tokens.spacing.sm,
+    marginVertical: tokens.spacing.md,
+    paddingHorizontal: tokens.spacing.lg,
+    paddingVertical: tokens.spacing.sm,
+    borderRadius: tokens.radius.pill,
+    backgroundColor: tokens.colors.bg.raised,
+    borderWidth: 1,
+    borderColor: tokens.colors.overlay.glassMedium,
   },
   systemText: {
-    color: tokens.colors.text.subtle,
-    ...tokens.typography.micro,
+    color: tokens.colors.text.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "400",
+    textAlign: "center",
   },
   expiredBanner: {
     paddingHorizontal: tokens.spacing.xl,
@@ -590,59 +976,50 @@ const styles = StyleSheet.create({
     ...tokens.typography.micro,
     textAlign: "center",
   },
-  inputRow: {
+  // Input bar styles
+  inputBar: {
     flexDirection: "row",
     alignItems: "flex-end",
-    paddingHorizontal: tokens.spacing.xl,
-    paddingVertical: tokens.spacing.lg,
+    paddingHorizontal: tokens.spacing.lg,
+    paddingTop: tokens.spacing.md,
     borderTopWidth: 1,
     borderTopColor: tokens.colors.overlay.glassMedium,
-    backgroundColor: tokens.colors.bg.surface,
+    backgroundColor: tokens.colors.bg.base,
+    gap: tokens.spacing.sm,
   },
-  input: {
+  inputFieldContainer: {
     flex: 1,
+    borderRadius: tokens.radius.pill,
+    backgroundColor: tokens.colors.bg.raised,
+    borderWidth: 1,
+    borderColor: tokens.colors.overlay.glassMedium,
+    minHeight: 44,
     maxHeight: 120,
-    borderRadius: tokens.radius.button,
+    justifyContent: "center",
+  },
+  inputField: {
+    flex: 1,
     paddingHorizontal: tokens.spacing.lg,
     paddingVertical: tokens.spacing.sm,
-    backgroundColor: tokens.colors.bg.raised,
     color: tokens.colors.text.primary,
-    ...tokens.typography.body2,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "400",
   },
-  inputDisabled: {
+  inputFieldDisabled: {
     opacity: 0.5,
   },
   sendButton: {
-    marginLeft: tokens.spacing.sm,
-    paddingHorizontal: tokens.spacing.lg,
-    paddingVertical: tokens.spacing.sm,
-    borderRadius: tokens.radius.button,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: tokens.colors.primary.solid,
+    alignItems: "center",
+    justifyContent: "center",
   },
   sendButtonDisabled: {
     backgroundColor: tokens.colors.bg.raised,
-  },
-  sendText: {
-    color: tokens.colors.primary.onPrimary,
-    ...tokens.typography.body2,
-    fontWeight: "600",
-  },
-  // Phase 3: Typing indicator
-  typingIndicator: {
-    color: tokens.colors.text.muted,
-    fontSize: 12,
-    fontStyle: "italic",
-    marginTop: 2,
-  },
-  // Phase 3: Message footer with read receipt
-  messageFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    marginTop: 4,
-  },
-  readReceipt: {
-    marginLeft: 4,
+    opacity: 0.5,
   },
   // Phase 3: Options modal
   optionsButton: {
@@ -727,6 +1104,235 @@ const styles = StyleSheet.create({
     color: tokens.colors.text.primary,
     fontSize: 13,
     lineHeight: 18,
+  },
+  // Profile Preview Modal styles - Full Screen Sheet
+  profileSheet: {
+    flex: 1,
+    backgroundColor: tokens.colors.bg.base,
+  },
+  profileHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: tokens.spacing.lg,
+    paddingVertical: tokens.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: tokens.colors.divider,
+    backgroundColor: tokens.colors.bg.base,
+    minHeight: 56,
+  },
+  profileHeaderClose: {
+    padding: tokens.spacing.sm,
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  profileHeaderTitle: {
+    color: tokens.colors.text.primary,
+    fontSize: 18,
+    fontWeight: "600",
+    flex: 1,
+    textAlign: "center",
+  },
+  profileHeaderRight: {
+    width: 40,
+  },
+  profileScrollView: {
+    flex: 1,
+  },
+  profileScrollContent: {
+    paddingHorizontal: tokens.spacing.lg,
+    paddingTop: tokens.spacing.lg,
+  },
+  // Avatar section
+  profileAvatarWrap: {
+    alignItems: "center",
+    marginBottom: tokens.spacing.lg,
+    position: "relative",
+  },
+  profileAvatar: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: tokens.colors.overlay.glassMedium,
+  },
+  profileAvatarImage: {
+    borderRadius: 44,
+  },
+  profileAvatarFallback: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: tokens.colors.bg.raised,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: tokens.colors.overlay.glassMedium,
+  },
+  profileAvatarFallbackText: {
+    color: tokens.colors.text.primary,
+    fontSize: 32,
+    fontWeight: "600",
+  },
+  profileVerifiedBadge: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    backgroundColor: tokens.colors.bg.base,
+    borderRadius: 12,
+    padding: 2,
+  },
+  // Name section
+  profileNameSection: {
+    alignItems: "center",
+    marginBottom: tokens.spacing.xl,
+  },
+  profileName: {
+    color: tokens.colors.text.primary,
+    fontSize: 24,
+    fontWeight: "700",
+    lineHeight: 32,
+    marginBottom: tokens.spacing.xs,
+    textAlign: "center",
+  },
+  profileLocation: {
+    color: tokens.colors.text.muted,
+    fontSize: 15,
+    lineHeight: 20,
+    marginBottom: tokens.spacing.xs,
+    textAlign: "center",
+  },
+  profileMeta: {
+    color: tokens.colors.text.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: tokens.spacing.xs,
+    textAlign: "center",
+  },
+  // Sections
+  profileSection: {
+    marginTop: tokens.spacing.xl,
+    paddingHorizontal: tokens.spacing.lg,
+  },
+  // Section Header with Red Accent
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: tokens.spacing.md,
+  },
+  sectionAccent: {
+    width: 4,
+    height: 18,
+    borderRadius: 2,
+    backgroundColor: tokens.colors.primary.solid,
+    marginRight: tokens.spacing.sm,
+  },
+  sectionTitle: {
+    color: tokens.colors.primary.solid,
+    letterSpacing: 3,
+    fontSize: 12,
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
+  // About Section
+  aboutText: {
+    color: tokens.colors.text.muted,
+    fontSize: 15,
+    lineHeight: 23,
+    fontWeight: "400",
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: "rgba(255, 45, 45, 0.2)",
+    marginTop: tokens.spacing.lg,
+  },
+  // Photo carousel
+  profileCarousel: {
+    marginHorizontal: -tokens.spacing.lg,
+    marginBottom: 0,
+  },
+  // Badges
+  profileBadgesRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: tokens.spacing.sm,
+  },
+  profileBadge: {
+    paddingHorizontal: tokens.spacing.md,
+    paddingVertical: tokens.spacing.xs,
+    borderRadius: tokens.radius.pill,
+    backgroundColor: tokens.colors.bg.raised,
+    borderWidth: 1,
+    borderColor: tokens.colors.overlay.glassMedium,
+  },
+  profileBadgeText: {
+    color: tokens.colors.text.primary,
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  // Prompts - Red Outlined Cards
+  promptCard: {
+    borderWidth: 1.5,
+    borderColor: tokens.colors.primary.solid,
+    borderRadius: 18,
+    paddingVertical: tokens.spacing.lg,
+    paddingHorizontal: tokens.spacing.lg,
+    marginBottom: tokens.spacing.lg,
+    backgroundColor: "rgba(0, 0, 0, 0.4)",
+  },
+  promptTitle: {
+    color: tokens.colors.text.subtle,
+    fontStyle: "italic",
+    fontSize: 14,
+    marginBottom: tokens.spacing.xs,
+    fontWeight: "400",
+  },
+  promptAnswer: {
+    color: tokens.colors.text.primary,
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: "600",
+  },
+  // Interests - Red Outlined Pills
+  interestsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: tokens.spacing.sm,
+  },
+  interestPill: {
+    borderWidth: 1.5,
+    borderColor: tokens.colors.primary.solid,
+    borderRadius: tokens.radius.pill,
+    paddingHorizontal: tokens.spacing.lg,
+    paddingVertical: tokens.spacing.sm,
+    backgroundColor: "transparent",
+  },
+  interestText: {
+    color: tokens.colors.text.primary,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  // Vibe highlights
+  profileVibeItem: {
+    color: tokens.colors.text.primary,
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: tokens.spacing.sm,
+    paddingLeft: tokens.spacing.md,
+  },
+  // Unavailable state
+  profileUnavailable: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: tokens.spacing.xxxl,
+  },
+  profileUnavailableText: {
+    color: tokens.colors.text.muted,
+    fontSize: 16,
+    fontWeight: "500",
   },
 });
 

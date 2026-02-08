@@ -21,7 +21,10 @@ const AuthChoiceScreen: React.FC<Props> = ({ navigation }) => {
   const isExpoGo = Constants.appOwnership === "expo";
   const hasWebClient = Boolean(process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID);
   const hasIosClient = Boolean(process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID);
-  const googleEnabled = isExpoGo ? hasWebClient : hasWebClient && hasIosClient;
+  const hasAndroidClient = Boolean(process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID);
+  const googleEnabled = isExpoGo
+    ? hasWebClient
+    : hasWebClient && hasIosClient && hasAndroidClient;
 
   const redirectUri = AuthSession.makeRedirectUri({
     useProxy: true,
@@ -29,12 +32,16 @@ const AuthChoiceScreen: React.FC<Props> = ({ navigation }) => {
   });
 
   const expoWebClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+  const androidClientId = isExpoGo
+    ? expoWebClientId
+    : process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
   const iosClientId = isExpoGo
     ? expoWebClientId
     : process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
 
   const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
     expoClientId: expoWebClientId,
+    androidClientId,
     iosClientId: isExpoGo ? expoWebClientId : iosClientId,
     webClientId: expoWebClientId,
     redirectUri,
@@ -45,6 +52,7 @@ const AuthChoiceScreen: React.FC<Props> = ({ navigation }) => {
     logger.info("auth.google.config", {
       redirectUri,
       expoClientId: expoWebClientId,
+      androidClientId,
       iosClientId,
       isExpoGo,
       requestUrl: request?.url,

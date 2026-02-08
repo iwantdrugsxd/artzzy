@@ -7,11 +7,12 @@ import {
   GoogleAuthProvider,
   signOut as firebaseSignOut,
 } from "firebase/auth";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../firebaseApp";
 import { logger } from "../utils/logger";
 import { storage } from "../utils/storage";
 import { Profile, ProfileDraft, Gender } from "../types/profile";
+import { ensureUniqueUserCode } from "../utils/userCode";
 
 type User = {
   id: string;
@@ -105,6 +106,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
             prompts: data.prompts ?? [],
           };
 
+          // Backfill user_code if missing
+          if (!normalized.user_code) {
+            try {
+              const userCode = await ensureUniqueUserCode();
+              await updateDoc(ref, { user_code: userCode });
+              normalized.user_code = userCode;
+              logger.info("auth.userCode.backfilled", { uid: firebaseUser.uid, userCode });
+            } catch (error) {
+              logger.error("auth.userCode.backfill.failed", { error, uid: firebaseUser.uid });
+            }
+          }
+
           setProfile(normalized);
           setDraft({
             name: normalized.name,
@@ -191,6 +204,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           prompts: data.prompts ?? [],
         };
 
+        // Backfill user_code if missing
+        if (!normalized.user_code) {
+          try {
+            const userCode = await ensureUniqueUserCode();
+            await updateDoc(ref, { user_code: userCode });
+            normalized.user_code = userCode;
+            logger.info("auth.userCode.backfilled", { uid: user.id, userCode });
+          } catch (error) {
+            logger.error("auth.userCode.backfill.failed", { error, uid: user.id });
+          }
+        }
+
         setProfile(normalized);
         setDraft({
           name: normalized.name,
@@ -227,6 +252,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         : [];
     const primary = draft.primaryPhotoUrl || photos[0] || draft.profile_photo_url || "";
 
+    // Generate user_code for new users
+    let userCode: string;
+    try {
+      userCode = await ensureUniqueUserCode();
+    } catch (error) {
+      logger.error("onboarding.userCode.generate.failed", { error });
+      throw new Error("Failed to generate user code. Please try again.");
+    }
+
     const profileRecord: Profile = {
       user_id: user.id,
       email: user.email,
@@ -247,6 +281,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       created_at: Date.now(),
       onboarding_complete: true,
       isHost: profile?.isHost ?? false,
+      user_code: userCode,
     };
     setProfile(profileRecord);
     await setDoc(doc(db, "users", user.id), {

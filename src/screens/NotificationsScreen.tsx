@@ -45,7 +45,8 @@ type NotificationItem = {
     | "connection_accepted"
     | "connection_rejected"
     | "connection_expired"
-    | "saved_connection_confirmed";
+    | "saved_connection_confirmed"
+    | "id_connection_request";
   title: string;
   body: string;
   outingId?: string;
@@ -133,15 +134,17 @@ const NotificationsScreen: React.FC = () => {
       });
     } else if (notification.type === "connection_request" && notification.requestId) {
       navigation.navigate("ConnectionReview", { requestId: notification.requestId });
-    } else if (
-      notification.type === "connection_accepted" &&
-      notification.chatId &&
-      notification.fromUid
-    ) {
-      navigation.navigate("DirectChat", {
-        chatId: notification.chatId,
-        otherUid: notification.fromUid,
-      });
+    } else if (notification.type === "id_connection_request" && notification.requestId) {
+      navigation.navigate("IdConnectionReview", { requestId: notification.requestId });
+    } else if (notification.type === "connection_accepted" && notification.chatId) {
+      // Use fromUid if available, otherwise use toUid (defensive)
+      const otherUid = notification.fromUid || notification.toUid;
+      if (otherUid) {
+        navigation.navigate("DirectChat", {
+          chatId: notification.chatId,
+          otherUid,
+        });
+      }
     } else if (notification.outingId) {
       navigation.navigate("OutingDetails", { outingId: notification.outingId });
     }
@@ -194,6 +197,7 @@ const NotificationsScreen: React.FC = () => {
       case "connection_expired":
         return "close-circle";
       case "connection_request":
+      case "id_connection_request":
         return "heart";
       case "connection_accepted":
         return "chatbubbles";
@@ -213,6 +217,7 @@ const NotificationsScreen: React.FC = () => {
       case "connection_expired":
         return colors.danger;
       case "connection_request":
+      case "id_connection_request":
       case "connection_accepted":
         return colors.primary;
       default:
@@ -231,6 +236,7 @@ const NotificationsScreen: React.FC = () => {
       case "connection_expired":
         return colors.dangerSoft;
       case "connection_request":
+      case "id_connection_request":
       case "connection_accepted":
         return colors.primarySoft;
       default:
@@ -249,6 +255,7 @@ const NotificationsScreen: React.FC = () => {
       case "connection_expired":
         return "alerts";
       case "connection_request":
+      case "id_connection_request":
         return "invites";
       default:
         return "activity";

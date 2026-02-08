@@ -25,7 +25,7 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { RouteProp, useNavigation, useRoute } from "@react-navigation/native";
+import { RouteProp, useNavigation, useRoute, useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, spacing, radius, layout } from "../theme";
 import Screen from "../components/Screen";
@@ -33,6 +33,7 @@ import PrimaryButton from "../components/PrimaryButton";
 import { useAuth } from "../context/AuthContext";
 import { db } from "../firebaseApp";
 import { logger } from "../utils/logger";
+import { storage } from "../utils/storage";
 import { RootStackParamList } from "../types/navigation";
 import {
   OUTING_TYPES,
@@ -89,9 +90,20 @@ const CreateOutingScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const scrollViewRef = useRef<ScrollView>(null);
   const errorFieldRefs = useRef<Record<string, View | null>>({});
+  const hasHydratedDraftRef = useRef(false);
+  
+  // Diagnostic: Log mount and route key to detect remounts
+  useEffect(() => {
+    logger.info("createOuting.mounted", { routeKey: route.key, timestamp: Date.now() });
+  }, [route.key]);
   
   const [step, setStep] = useState(1);
   const [title, setTitle] = useState("");
+  
+  // Diagnostic: Log title state changes to track state loss
+  useEffect(() => {
+    logger.info("createOuting.title.changed", { step, titleLength: title.length, titlePreview: title.substring(0, 20) });
+  }, [step, title]);
   const [eventMode, setEventMode] = useState<"curated" | "fast">("curated"); // Default to curated (safer)
   const [typeId, setTypeId] = useState<OutingTypeId | null>(null);
   const [energy, setEnergy] = useState(50);
@@ -148,22 +160,70 @@ const CreateOutingScreen: React.FC = () => {
   }, [user]);
 
   // Handle location result passed back from LocationPicker
+  // Use both useEffect and useFocusEffect to catch the result whether screen remounts or not
   useEffect(() => {
     const result = route.params?.locationResult;
     if (result) {
+      logger.info("createOuting.locationResult.received.useEffect", { 
+        hasName: !!result.name,
+        hasAddress: !!result.address,
+        step,
+        titleLength: title.length
+      });
       setLocation(result);
       // Derive area from selected location name
       setArea(result.name || null);
       // If we somehow returned to step 1, jump the user back to logistics
       setStep((prev) => (prev < 2 ? 2 : prev));
+      // Clear the param to prevent re-processing
       navigation.setParams({ locationResult: undefined });
     }
-  }, [route.params?.locationResult, navigation]);
+  }, [route.params?.locationResult, navigation, step, title.length]);
+  
+  // Also listen for focus events to catch location result if screen was remounted
+  useFocusEffect(
+    React.useCallback(() => {
+      const result = route.params?.locationResult;
+      if (result) {
+        logger.info("createOuting.locationResult.received.focus", { 
+          hasName: !!result.name,
+          hasAddress: !!result.address,
+          step,
+          titleLength: title.length
+        });
+        setLocation(result);
+        setArea(result.name || null);
+        setStep((prev) => (prev < 2 ? 2 : prev));
+        navigation.setParams({ locationResult: undefined });
+      }
+    }, [route.params?.locationResult, navigation, step, title.length])
+  );
 
   useEffect(() => {
     setShowErrors(false);
     setPublishError(null);
   }, [step]);
+
+  // Draft hydration: restore title if screen remounts (e.g., after LocationPicker)
+  useEffect(() => {
+    if (!user || hasHydratedDraftRef.current) return;
+    hasHydratedDraftRef.current = true;
+    const draftKey = `outingDraft:${user.id}`;
+    (async () => {
+      const draft = await storage.get<{ title?: string }>(draftKey);
+      if (draft?.title && !title.trim()) {
+        setTitle(draft.title);
+        logger.info("createOuting.draft.restored", { titleLength: draft.title.length });
+      }
+    })();
+  }, [user, title]);
+
+  // Persist title draft to survive remounts
+  useEffect(() => {
+    if (!user || !hasHydratedDraftRef.current) return;
+    const draftKey = `outingDraft:${user.id}`;
+    storage.set(draftKey, { title });
+  }, [user, title]);
 
   const vibeMode = useMemo(() => {
     if (energy <= 30) return "CALM";
@@ -193,8 +253,9 @@ const CreateOutingScreen: React.FC = () => {
   // Generate search tokens for discovery
   const searchTokens = useMemo(() => {
     const tokens: string[] = [];
-    if (title) {
-      tokens.push(...title.toLowerCase().split(/\s+/).filter(Boolean));
+    const titleText = title.trim();
+    if (titleText) {
+      tokens.push(...titleText.toLowerCase().split(/\s+/).filter(Boolean));
     }
     if (area) {
       tokens.push(area.toLowerCase().replace(/\s+/g, "_"));
@@ -500,6 +561,35 @@ const CreateOutingScreen: React.FC = () => {
     setShowErrors(true);
     setPublishError(null);
     if (!user || !profile) return;
+    
+    // Validate title with same rules as step 1 validation
+    const trimmedTitle = title.trim();
+    logger.info("outing.publish.attempt", { 
+      titleLength: title.length, 
+      trimmedLength: trimmedTitle.length,
+      step 
+    });
+    
+    if (!trimmedTitle) {
+      logger.warn("outing.publish.title.empty", { title, trimmedTitle });
+      setPublishError("Outing title is required.");
+      setStep(1);
+      return;
+    }
+    
+    if (trimmedTitle.length < 6) {
+      logger.warn("outing.publish.title.too.short", { trimmedLength: trimmedTitle.length });
+      setPublishError("Title must be at least 6 characters.");
+      setStep(1);
+      return;
+    }
+    
+    if (trimmedTitle.length > 60) {
+      logger.warn("outing.publish.title.too.long", { trimmedLength: trimmedTitle.length });
+      setPublishError("Title must be 60 characters or less.");
+      setStep(1);
+      return;
+    }
     // Let Firestore enforce correctness; just make sure we at least have a cover
     if (!coverImageUrl) {
       setPublishError("Upload a cover image before publishing.");
@@ -530,6 +620,10 @@ const CreateOutingScreen: React.FC = () => {
             lat: Number(location.lat),
             lng: Number(location.lng),
             placeId: location.placeId || "",
+            addressLine2: location.addressLine2 || "",
+            landmark: location.landmark || "",
+            instructions: location.instructions || "",
+            placeId: location.placeId || "",
           }
         : null;
 
@@ -538,7 +632,7 @@ const CreateOutingScreen: React.FC = () => {
         hostName: profile.name,
         hostPhotoUrl: profile.profile_photo_url || "",
         city: profile.city || "Mumbai",
-        title: title.trim(),
+        title: trimmedTitle, // Required: title must be saved for display and search
         // Normalized fields
         typeId,
         // Always provide a concrete string; Firestore rejects undefined
@@ -585,7 +679,7 @@ const CreateOutingScreen: React.FC = () => {
       });
       batch.set(doc(db, "users", user.id, "activeOutings", outingRef.id), {
         outingId: outingRef.id,
-        title: title.trim(),
+        title: trimmedTitle,
         dateTime: dateTimeTimestamp,
         role: "host",
         coverImageUrl,
@@ -595,7 +689,7 @@ const CreateOutingScreen: React.FC = () => {
       try {
         batch.set(doc(db, "users", user.id, "hostedOutings", outingRef.id), {
           outingId: outingRef.id,
-          title: title.trim(),
+          title: trimmedTitle,
           dateTime: dateTimeTimestamp,
           coverImageUrl,
           status: "active",
@@ -605,6 +699,14 @@ const CreateOutingScreen: React.FC = () => {
         logger.error("outing.hostedOutings.index.failed", { error: indexError });
       }
       await batch.commit();
+      if (user) {
+        storage.remove(`outingDraft:${user.id}`);
+      }
+      logger.info("outing.created", { 
+        outingId: outingRef.id, 
+        title: trimmedTitle,
+        hostId: user.id 
+      });
       setPublished(true);
     } catch (error) {
       logger.error("outing.create.failed", { error });
@@ -658,6 +760,12 @@ const CreateOutingScreen: React.FC = () => {
 
           {step === 1 ? (
             <>
+              {/* Show publish error at top of step 1 if we jumped back from publish */}
+              {publishError && publishError.includes("title") ? (
+                <View style={styles.card}>
+                  <Text style={styles.errorText}>{publishError}</Text>
+                </View>
+              ) : null}
               <View style={styles.card}>
                 <Text style={styles.inputLabel}>Outing Title</Text>
                 <TextInput
@@ -665,7 +773,13 @@ const CreateOutingScreen: React.FC = () => {
                   placeholder="House party at Bandra"
                   placeholderTextColor={colors.textSubtle}
                   value={title}
-                  onChangeText={setTitle}
+                  onChangeText={(text) => {
+                    setTitle(text);
+                    // Clear publish error when user starts typing
+                    if (publishError && publishError.includes("title")) {
+                      setPublishError(null);
+                    }
+                  }}
                   maxLength={60}
                   autoCapitalize="words"
                 />
@@ -2104,4 +2218,3 @@ const styles = StyleSheet.create({
 });
 
 export default CreateOutingScreen;
-

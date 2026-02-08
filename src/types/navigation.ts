@@ -21,6 +21,10 @@ export type RootStackParamList = {
       lat: number;
       lng: number;
       placeId: string;
+      addressLine2?: string;
+      landmark?: string;
+      instructions?: string;
+      fullAddress?: string;
     };
   } | undefined;
   ChatThread: { outingId: string };
@@ -46,5 +50,5 @@ export type RootStackParamList = {
   SafetySettings: undefined; // Phase 3: Safety settings screen
   InviteFriends: undefined; // Phase 4: Invite friends screen
   Subscription: undefined; // Phase 4: Subscription management screen
-  DevTools: undefined; // Dev-only tools screen
+  IdConnectionReview: { requestId: string }; // Connect by User ID: Review screen
 };

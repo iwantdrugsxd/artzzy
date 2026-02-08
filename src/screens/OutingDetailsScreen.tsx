@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { doc, getDoc, collection, getDocs, query, where } from "firebase/firestore";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RootStackParamList } from "../types/navigation";
-import { colors, layout, tokens, typography, radius } from "../theme";
+import { colors, layout, radius, tokens, typography } from "../theme";
 import Screen from "../components/Screen";
 import IconButton from "../components/IconButton";
 import Card from "../components/Card";
@@ -31,6 +31,7 @@ import { vibeScore } from "../utils/vibeScore";
 import { OUTING_TYPES, VIBE_TAGS } from "../data/outingConstants";
 import { getEventPolicy } from "../utils/eventPolicy";
 import { computeHostScore } from "../utils/hostScore";
+import { backfillOutingTitleForHost } from "../utils/outingTitleBackfill";
 import * as Sharing from "expo-sharing";
 import * as Clipboard from "expo-clipboard";
 
@@ -59,6 +60,27 @@ const OutingDetailsScreen: React.FC = () => {
         const snap = await getDoc(ref);
         if (snap.exists()) {
           const outingData = { id: snap.id, ...(snap.data() as Outing) };
+          
+          // Ensure title exists (required for display)
+          if (!outingData.title?.trim()) {
+            // Backfill: some legacy/overwritten outing docs may have lost `title`.
+            // If the host has the title in their indices, restore it on the outing doc.
+            if (user?.id && user.id === outingData.hostId) {
+              const recoveredTitle = await backfillOutingTitleForHost({
+                outingId: route.params.outingId,
+                hostId: user.id,
+                currentTitle: (outingData as any).title,
+              });
+              if (recoveredTitle) {
+                outingData.title = recoveredTitle;
+              }
+            }
+            // Fallback if recovery fails
+            if (!outingData.title?.trim()) {
+              outingData.title = "Outing";
+            }
+          }
+
           setOuting(outingData);
 
           if (user) {
@@ -223,7 +245,8 @@ const OutingDetailsScreen: React.FC = () => {
     if (!outing) return;
     try {
       const deepLink = `partizo://outing/${outing.id}`;
-      const shareText = `Check out "${outing.title}" on Partizo!\n${deepLink}`;
+      const shareTitle = outing.title?.trim() || "this outing";
+      const shareText = `Check out "${shareTitle}" on Partizo!\n${deepLink}`;
       
       const isAvailable = await Sharing.isAvailableAsync();
       if (isAvailable) {
@@ -283,6 +306,7 @@ const OutingDetailsScreen: React.FC = () => {
     ? outing.vibeTagIds.map((id) => VIBE_TAGS[id]?.label).filter(Boolean)
     : outing.vibeTags ?? [];
   const rules = outing.rules ?? [];
+  const displayTitle = outing.title?.trim() || "Outing";
   const outingTypeLabel = outing.typeId
     ? OUTING_TYPES[outing.typeId]?.label
     : outing.type ?? "Outing";
@@ -330,7 +354,7 @@ const OutingDetailsScreen: React.FC = () => {
           </ImageBackground>
 
           <View style={styles.content}>
-            <Text style={styles.title}>{outing.title}</Text>
+            <Text style={styles.title}>{displayTitle}</Text>
             <View style={styles.typeRow}>
               <Pill label={outingTypeLabel} selected />
               {vibeMatch !== null ? (

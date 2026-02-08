@@ -19,6 +19,7 @@ import PrimaryButton from "../components/PrimaryButton";
 import SecondaryButton from "../components/SecondaryButton";
 import { logger } from "../utils/logger";
 import { computeHostScore } from "../utils/hostScore";
+import { backfillOutingTitleForHost } from "../utils/outingTitleBackfill";
 
 type Nav = StackNavigationProp<RootStackParamList, "HostDashboard">;
 
@@ -59,11 +60,25 @@ const HostDashboardScreen: React.FC = () => {
           id: docItem.id,
           ...(docItem.data() as Outing),
         }));
-        setActiveOutings(outings);
-        setHasOutings(outings.length > 0);
+
+        // Backfill missing titles for host-owned outings (legacy/overwritten docs).
+        const fixedOutings = await Promise.all(
+          outings.map(async (outing) => {
+            if (outing.title?.trim()) return outing;
+            const recoveredTitle = await backfillOutingTitleForHost({
+              outingId: outing.id,
+              hostId: user.id,
+              currentTitle: outing.title,
+            });
+            return recoveredTitle ? { ...outing, title: recoveredTitle } : outing;
+          })
+        );
+
+        setActiveOutings(fixedOutings);
+        setHasOutings(fixedOutings.length > 0);
 
         const curatedOutingIds = new Set(
-          outings.filter((o) => o.eventMode === "curated").map((o) => o.id)
+          fixedOutings.filter((o) => o.eventMode === "curated").map((o) => o.id)
         );
 
         const requestsSnap = await getDocs(
@@ -154,13 +169,15 @@ const HostDashboardScreen: React.FC = () => {
     if (!request || !user) return;
     if (status === "approved") {
       const outing = activeOutings.find((item) => item.id === request.outingId);
-      await outingStorage.approveRequest(request.outingId, request.userId, user.id, {
+      // Sanitize outing meta: convert undefined to null (Firestore-safe)
+      const outingMeta = {
         outingId: request.outingId,
-        title: outing?.title ?? "Outing",
+        title: outing?.title ?? null,
         coverImageUrl: outing?.coverImageUrl ?? null,
         dateTime: outing?.dateTime ?? null,
         area: outing?.area ?? null,
-      });
+      };
+      await outingStorage.approveRequest(request.outingId, request.userId, user.id, outingMeta);
     } else {
       await outingStorage.declineRequest(request.outingId, request.userId);
     }

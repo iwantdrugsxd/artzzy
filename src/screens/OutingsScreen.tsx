@@ -95,10 +95,13 @@ const OutingsScreen: React.FC = () => {
         const data = snap.docs
           .map((docItem) => {
             const outingData = docItem.data() as Outing;
-            return {
+            // Ensure title is always present (fallback for legacy data)
+            const outingWithTitle = {
               ...outingData,
               id: docItem.id, // Ensure id is set after spread
+              title: outingData.title?.trim() || "Outing", // Ensure title exists for display
             };
+            return outingWithTitle;
           })
           .filter((outing) => {
             // Filter out user's own outings
@@ -244,8 +247,6 @@ const OutingsScreen: React.FC = () => {
       <IconButton icon={<Ionicons name="search" size={18} color={tokens.colors.text.secondary} />} />
       <IconButton
         onPress={() => navigation.navigate("MyProfile")}
-        style={styles.avatarButton}
-        pressedStyle={styles.avatarPressed}
         icon={
           profile?.profile_photo_url ? (
             <ImageBackground
@@ -384,14 +385,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: tokens.spacing.md,
-  },
-  avatarButton: {
-    borderWidth: 1,
-    borderColor: tokens.colors.transparent,
-  },
-  avatarPressed: {
-    borderColor: tokens.colors.primary.solid,
-    ...tokens.shadows.glow.soft,
   },
   profileImage: {
     width: 32,

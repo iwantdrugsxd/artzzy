@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { StyleSheet, Text, View, Pressable, ImageBackground } from "react-native";
 import { StackNavigationProp } from "@react-navigation/stack";
 import { useNavigation } from "@react-navigation/native";
-import { collection, getDocs, doc, getDoc, onSnapshot, writeBatch } from "firebase/firestore";
+import { collection, getDocs, doc, getDoc, onSnapshot, writeBatch, query, where } from "firebase/firestore";
 import { RootStackParamList } from "../types/navigation";
 import { colors, layout, typography } from "../theme";
 import Screen from "../components/Screen";
@@ -27,12 +27,22 @@ type ActiveOuting = {
   lastSenderName?: string;
 };
 
+type DirectChat = {
+  chatId: string;
+  otherUid: string;
+  otherName: string;
+  otherPhoto?: string;
+  lastMessage?: string;
+  lastMessageAt?: any;
+};
+
 type Nav = StackNavigationProp<RootStackParamList, "Home">;
 
 const ChatListScreen: React.FC = () => {
   const navigation = useNavigation<Nav>();
   const { user, profile } = useAuth();
   const [threads, setThreads] = useState<ActiveOuting[]>([]);
+  const [directChats, setDirectChats] = useState<DirectChat[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,6 +52,110 @@ const ChatListScreen: React.FC = () => {
     const load = async () => {
       try {
         setLoading(true);
+        
+        // Load direct chats
+        const directChatsQuery = query(
+          collection(db, "directChats"),
+          where("participants", "array-contains", user.id)
+        );
+        const directChatsSnap = await getDocs(directChatsQuery);
+        
+        const now = Date.now();
+        const directChatsData = await Promise.all(
+          directChatsSnap.docs
+            .map((docItem) => {
+              const data = docItem.data();
+              const chatId = docItem.id;
+              
+              // Filter expired chats
+              if (data.expiresAt?.toDate) {
+                const expiresAt = data.expiresAt.toDate().getTime();
+                if (now >= expiresAt) {
+                  return null;
+                }
+              }
+              
+              // Only show active or saved chats
+              if (data.state !== "active" && data.state !== "saved") {
+                return null;
+              }
+              
+              // Find other user
+              const participants = data.participants || [];
+              const otherUid = participants.find((uid: string) => uid !== user.id);
+              
+              if (!otherUid) {
+                return null;
+              }
+              
+              return {
+                chatId,
+                otherUid,
+                lastMessage: data.lastMessage?.text || "Start the conversation...",
+                lastMessageAt: data.lastMessage?.createdAt || null,
+                state: data.state,
+              };
+            })
+            .filter(Boolean) as Array<{
+              chatId: string;
+              otherUid: string;
+              lastMessage: string;
+              lastMessageAt: any;
+              state: string;
+            }>
+        );
+        
+        // Load other user profiles for direct chats
+        const directChatsWithProfiles = await Promise.all(
+          directChatsData.map(async (chat) => {
+            try {
+              const otherProfileSnap = await getDoc(doc(db, "users", chat.otherUid));
+              if (otherProfileSnap.exists()) {
+                const otherProfile = otherProfileSnap.data();
+                return {
+                  chatId: chat.chatId,
+                  otherUid: chat.otherUid,
+                  otherName: otherProfile.name || "Unknown",
+                  otherPhoto: otherProfile.profile_photo_url || otherProfile.primaryPhotoUrl || undefined,
+                  lastMessage: chat.lastMessage,
+                  lastMessageAt: chat.lastMessageAt,
+                };
+              }
+              return {
+                chatId: chat.chatId,
+                otherUid: chat.otherUid,
+                otherName: "Unknown",
+                otherPhoto: undefined,
+                lastMessage: chat.lastMessage,
+                lastMessageAt: chat.lastMessageAt,
+              };
+            } catch (error) {
+              logger.error("chat.direct.profile.load.failed", { error, otherUid: chat.otherUid });
+              return {
+                chatId: chat.chatId,
+                otherUid: chat.otherUid,
+                otherName: "Unknown",
+                otherPhoto: undefined,
+                lastMessage: chat.lastMessage,
+                lastMessageAt: chat.lastMessageAt,
+              };
+            }
+          })
+        );
+        
+        // Sort direct chats by last message time
+        directChatsWithProfiles.sort((a, b) => {
+          if (!a.lastMessageAt && !b.lastMessageAt) return 0;
+          if (!a.lastMessageAt) return 1;
+          if (!b.lastMessageAt) return -1;
+          const aTime = a.lastMessageAt.toDate?.()?.getTime() || 0;
+          const bTime = b.lastMessageAt.toDate?.()?.getTime() || 0;
+          return bTime - aTime;
+        });
+        
+        setDirectChats(directChatsWithProfiles);
+        
+        // Load outing chats (existing code)
         const activeSnap = await getDocs(
           collection(db, "users", user.id, "activeOutings")
         );
@@ -138,14 +252,28 @@ const ChatListScreen: React.FC = () => {
 
     load();
 
-    const unsubscribe = onSnapshot(
+    // Subscribe to both activeOutings and directChats changes
+    const unsubscribeOutings = onSnapshot(
       collection(db, "users", user.id, "activeOutings"),
       () => {
         load();
       }
     );
+    
+    const unsubscribeDirectChats = onSnapshot(
+      query(
+        collection(db, "directChats"),
+        where("participants", "array-contains", user.id)
+      ),
+      () => {
+        load();
+      }
+    );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeOutings();
+      unsubscribeDirectChats();
+    };
   }, [user]);
 
   const formatTime = (value: any) => {
@@ -186,13 +314,80 @@ const ChatListScreen: React.FC = () => {
             </View>
           ))}
         </View>
-      ) : threads.length === 0 ? (
+      ) : threads.length === 0 && directChats.length === 0 ? (
         <EmptyState
           title="No chats yet"
-          subtitle="Join an outing to start a conversation."
+          subtitle="Join an outing or connect with someone to start a conversation."
         />
       ) : (
-        threads.map((outing, index) => {
+        <>
+          {/* Direct Chats Section */}
+          {directChats.length > 0 && (
+            <>
+              {directChats.map((chat, index) => {
+                const unread =
+                  chat.lastMessage &&
+                  chat.lastMessage !== "Start the conversation...";
+                return (
+                  <View key={chat.chatId}>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.thread,
+                        pressed ? styles.threadPressed : null,
+                      ]}
+                      onPress={() =>
+                        navigation.navigate("DirectChat", {
+                          chatId: chat.chatId,
+                          otherUid: chat.otherUid,
+                        })
+                      }
+                    >
+                      <View style={styles.avatar}>
+                        {chat.otherPhoto ? (
+                          <ImageBackground
+                            source={{ uri: chat.otherPhoto }}
+                            style={styles.threadImage}
+                            imageStyle={styles.threadImageStyle}
+                          />
+                        ) : (
+                          <Text style={styles.avatarFallback}>
+                            {chat.otherName[0]?.toUpperCase() || "?"}
+                          </Text>
+                        )}
+                      </View>
+                      <View style={styles.threadContent}>
+                        <Text style={styles.threadTitle} numberOfLines={1}>
+                          {chat.otherName}
+                        </Text>
+                        <Text style={styles.threadPreview} numberOfLines={1}>
+                          {chat.lastMessage}
+                        </Text>
+                      </View>
+                      <View style={styles.threadMeta}>
+                        {chat.lastMessageAt ? (
+                          <Text style={styles.threadTime}>
+                            {formatTime(chat.lastMessageAt)}
+                          </Text>
+                        ) : null}
+                        {unread ? <View style={styles.unreadBadge} /> : null}
+                      </View>
+                    </Pressable>
+                    {index < directChats.length - 1 && (
+                      <View style={styles.divider} />
+                    )}
+                  </View>
+                );
+              })}
+              {threads.length > 0 && (
+                <View style={styles.sectionDivider}>
+                  <Text style={styles.sectionDividerText}>Outing Chats</Text>
+                </View>
+              )}
+            </>
+          )}
+          
+          {/* Outing Chats Section */}
+          {threads.map((outing, index) => {
           const unread =
             outing.lastSenderName &&
             profile?.name &&
@@ -237,7 +432,8 @@ const ChatListScreen: React.FC = () => {
               {index < threads.length - 1 && <View style={styles.divider} />}
             </View>
           );
-        })
+          })}
+        </>
       )}
     </Screen>
   );
@@ -331,6 +527,21 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: colors.primary,
     marginTop: 2,
+  },
+  sectionDivider: {
+    paddingHorizontal: layout.gutter,
+    paddingVertical: layout.section,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: colors.divider,
+    backgroundColor: colors.surface1,
+  },
+  sectionDividerText: {
+    color: colors.textSubtle,
+    fontSize: 12,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
 });
 

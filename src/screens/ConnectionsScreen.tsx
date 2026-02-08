@@ -103,7 +103,6 @@ const ConnectionsScreen: React.FC = () => {
                 </View>
                 <View style={styles.cardBody}>
                   <Text style={styles.name}>{name}</Text>
-                  {city ? <Text style={styles.meta}>{city}</Text> : null}
                 </View>
               </Pressable>
             );

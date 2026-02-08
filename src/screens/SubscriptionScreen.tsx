@@ -11,6 +11,7 @@ import { useNavigation } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { doc, updateDoc } from "firebase/firestore";
 import { RootStackParamList } from "../types/navigation";
 import { colors, tokens } from "../theme";
 import Screen from "../components/Screen";
@@ -21,14 +22,19 @@ import PrimaryButton from "../components/PrimaryButton";
 import SecondaryButton from "../components/SecondaryButton";
 import Card from "../components/Card";
 import EmptyState from "../components/EmptyState";
+import { getPlanTier } from "../utils/connectionPolicy";
+import { db } from "../firebaseApp";
 
 type Nav = StackNavigationProp<RootStackParamList, "Subscription">;
 
 const SubscriptionScreen: React.FC = () => {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [loading, setLoading] = useState(false);
+  const tier = getPlanTier(profile);
+  const isPlus = tier === "plus";
+  const showDevTools = __DEV__ === true;
 
   // Phase 4: Restore purchases
   const handleRestorePurchases = async () => {
@@ -82,9 +88,13 @@ const SubscriptionScreen: React.FC = () => {
             />
             <Text style={styles.statusTitle}>Current Plan</Text>
           </View>
-          <Text style={styles.statusText}>Free Plan</Text>
+          <Text style={styles.statusText}>
+            {isPlus ? "Premium Plan" : "Free Plan"}
+          </Text>
           <Text style={styles.statusSubtext}>
-            Upgrade to Premium for advanced filters, spotlight visibility, and more.
+            {isPlus
+              ? "You’re on Premium. Enjoy unlimited vibes and more visibility."
+              : "Upgrade to Premium for advanced filters, spotlight visibility, and more."}
           </Text>
         </Card>
 
@@ -128,8 +138,10 @@ const SubscriptionScreen: React.FC = () => {
 
         <View style={styles.actions}>
           <PrimaryButton
-            label="Upgrade to Premium"
+            label={isPlus ? "Premium Active" : "Upgrade to Premium"}
+            disabled={isPlus}
             onPress={() => {
+              if (isPlus) return;
               logger.info("subscription.upgrade.started", { userId: user?.id });
               Alert.alert(
                 "Upgrade to Premium",
@@ -167,6 +179,36 @@ const SubscriptionScreen: React.FC = () => {
               />
             }
           />
+          {showDevTools ? (
+            <Card padding="md" style={styles.devCard}>
+              <Text style={styles.devTitle}>Developer Tools</Text>
+              <Text style={styles.devHint}>
+                Toggle plan to test premium gating without payments.
+              </Text>
+              <SecondaryButton
+                label={isPlus ? "Set Free (Dev)" : "Set Premium (Dev)"}
+                onPress={async () => {
+                  if (!user) return;
+                  try {
+                    setLoading(true);
+                    await updateDoc(doc(db, "users", user.id), {
+                      plan: isPlus ? "free" : "plus",
+                    });
+                    Alert.alert(
+                      "Plan updated",
+                      isPlus ? "Switched to Free." : "Switched to Premium."
+                    );
+                  } catch (error) {
+                    logger.error("subscription.dev.toggle.failed", { error, userId: user.id });
+                    Alert.alert("Error", "Failed to update plan.");
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+                disabled={loading}
+              />
+            </Card>
+          ) : null}
         </View>
       </ScrollView>
     </Screen>
@@ -230,9 +272,21 @@ const styles = StyleSheet.create({
   actions: {
     gap: tokens.spacing.md,
   },
+  devCard: {
+    marginTop: tokens.spacing.md,
+  },
+  devTitle: {
+    color: tokens.colors.text.primary,
+    ...tokens.typography.h3,
+    fontWeight: "700",
+    marginBottom: tokens.spacing.xs,
+  },
+  devHint: {
+    color: tokens.colors.text.muted,
+    ...tokens.typography.body2,
+    marginBottom: tokens.spacing.md,
+  },
 });
 
 export default SubscriptionScreen;
-
-
 

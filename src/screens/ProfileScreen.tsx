@@ -153,13 +153,15 @@ const ProfileScreen: React.FC = () => {
       const outingSnap = await getDoc(doc(db, "outings", route.params.outingId));
       if (!outingSnap.exists()) return;
       const outingData = outingSnap.data();
-      await outingStorage.approveRequest(route.params.outingId, route.params.userId, user.id, {
+      // Sanitize outing meta: convert undefined to null (Firestore-safe)
+      const outingMeta = {
         outingId: route.params.outingId,
-        title: outingData.title,
-        coverImageUrl: outingData.coverImageUrl,
-        dateTime: outingData.dateTime,
-        area: outingData.area,
-      });
+        title: outingData.title ?? null,
+        coverImageUrl: outingData.coverImageUrl ?? null,
+        dateTime: outingData.dateTime ?? null,
+        area: outingData.area ?? null,
+      };
+      await outingStorage.approveRequest(route.params.outingId, route.params.userId, user.id, outingMeta);
       navigation.goBack();
     } catch (error) {
       logger.error("profile.host.approve.failed", { error });

@@ -114,13 +114,15 @@ const HostViewProfileScreen: React.FC = () => {
       if (!outingSnap.exists()) return;
       
       const outingData = outingSnap.data();
-      await outingStorage.approveRequest(outingId, userId, user.id, {
+      // Sanitize outing meta: convert undefined to null (Firestore-safe)
+      const outingMeta = {
         outingId,
-        title: outingData.title,
-        coverImageUrl: outingData.coverImageUrl,
-        dateTime: outingData.dateTime,
-        area: outingData.area,
-      });
+        title: outingData.title ?? null,
+        coverImageUrl: outingData.coverImageUrl ?? null,
+        dateTime: outingData.dateTime ?? null,
+        area: outingData.area ?? null,
+      };
+      await outingStorage.approveRequest(outingId, userId, user.id, outingMeta);
       
       navigation.goBack();
     } catch (error) {

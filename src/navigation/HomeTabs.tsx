@@ -9,7 +9,6 @@ import OutingsScreen from "../screens/OutingsScreen";
 import ChatListScreen from "../screens/ChatListScreen";
 import PeopleScreen from "../screens/PeopleScreen";
 import NotificationsScreen from "../screens/NotificationsScreen";
-import DevToolsScreen from "../screens/DevToolsScreen";
 import { colors, layout, shadows } from "../theme";
 import { haptics } from "../utils/haptics";
 import { useAuth } from "../context/AuthContext";
@@ -22,7 +21,6 @@ type HomeTabParamList = {
   CreateOuting: undefined;
   Chat: undefined;
   Notifications: undefined;
-  DevTools: undefined;
 };
 
 const Tab = createBottomTabNavigator<HomeTabParamList>();
@@ -179,18 +177,6 @@ const HomeTabs = () => {
           tabBarLabel: () => null,
         }}
       />
-      {__DEV__ ? (
-        <Tab.Screen
-          name="DevTools"
-          component={DevToolsScreen}
-          options={{
-            tabBarIcon: ({ focused }) => (
-              <TabTile focused={focused} label="Dev" icon="construct" />
-            ),
-            tabBarLabel: () => null,
-          }}
-        />
-      ) : null}
     </Tab.Navigator>
   );
 };

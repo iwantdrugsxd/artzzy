@@ -1,0 +1,175 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+6 0 obj
+<< /Length 2442 >>
+stream
+BT
+/F2 18 Tf
+72 760 Td
+(Partizo App Summary) Tj
+ET
+BT
+/F2 12 Tf
+72 732 Td
+(What it is) Tj
+ET
+BT
+/F1 10 Tf
+72 716 Td
+(Partizo is an Expo-based React Native app for discovering and hosting small group outings) Tj
+ET
+BT
+/F1 10 Tf
+72 704 Td
+(with vibe-based matching, profiles, and chat.) Tj
+ET
+BT
+/F2 12 Tf
+72 684 Td
+(Who it is for) Tj
+ET
+BT
+/F1 10 Tf
+72 668 Td
+(People who want to meet others and join or host local outings; hosts managing events.) Tj
+ET
+BT
+/F2 12 Tf
+72 648 Td
+(What it does) Tj
+ET
+BT
+/F1 10 Tf
+84 632 Td
+(- Email and Google sign-in plus onboarding for profile, photos, prompts, and vibe answers.) Tj
+ET
+BT
+/F1 10 Tf
+84 620 Td
+(- Discover outings, view details, see vibe match, and request to join.) Tj
+ET
+BT
+/F1 10 Tf
+84 608 Td
+(- Create and host outings with host dashboard and management tools.) Tj
+ET
+BT
+/F1 10 Tf
+84 596 Td
+(- Vibe people feed with connection requests, limits, and match scoring.) Tj
+ET
+BT
+/F1 10 Tf
+84 584 Td
+(- Direct and outing chats, plus a unified chat list.) Tj
+ET
+BT
+/F1 10 Tf
+84 572 Td
+(- Notifications center for requests and outing updates.) Tj
+ET
+BT
+/F1 10 Tf
+84 560 Td
+(- Safety settings and ID connection review, plus profile preview and sharing.) Tj
+ET
+BT
+/F2 12 Tf
+72 540 Td
+(How it works) Tj
+ET
+BT
+/F1 10 Tf
+84 524 Td
+(- Expo React Native client with stack and tab navigation driving screens.) Tj
+ET
+BT
+/F1 10 Tf
+84 512 Td
+(- Firebase Auth with AsyncStorage persistence for sign-in state.) Tj
+ET
+BT
+/F1 10 Tf
+84 500 Td
+(- Firestore stores users, outings, connection requests, chats, and notifications.) Tj
+ET
+BT
+/F1 10 Tf
+84 488 Td
+(- AuthContext loads profile from Firestore and gates onboarding vs. main app.) Tj
+ET
+BT
+/F1 10 Tf
+84 476 Td
+(- Screens subscribe to Firestore in real time; storage utilities encapsulate writes.) Tj
+ET
+BT
+/F2 12 Tf
+72 456 Td
+(How to run) Tj
+ET
+BT
+/F1 10 Tf
+84 440 Td
+(1. npm install) Tj
+ET
+BT
+/F1 10 Tf
+84 428 Td
+(2. Set env vars: EXPO_PUBLIC_FIREBASE_API_KEY, EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,) Tj
+ET
+BT
+/F1 10 Tf
+84 416 Td
+(   EXPO_PUBLIC_FIREBASE_PROJECT_ID, EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,) Tj
+ET
+BT
+/F1 10 Tf
+84 404 Td
+(   EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID, EXPO_PUBLIC_FIREBASE_APP_ID,) Tj
+ET
+BT
+/F1 10 Tf
+84 392 Td
+(   EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID, EXPO_PUBLIC_GOOGLE_MAPS_API_KEY) Tj
+ET
+BT
+/F1 10 Tf
+84 380 Td
+(   \(values not found in repo\).) Tj
+ET
+BT
+/F1 10 Tf
+84 368 Td
+(3. npm run start \(choose android, ios, or web\).) Tj
+ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000251 00000 n 
+0000000321 00000 n 
+0000000396 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+2890
+%%EOF

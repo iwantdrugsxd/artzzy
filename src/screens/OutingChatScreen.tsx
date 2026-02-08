@@ -30,7 +30,7 @@ import {
 } from "firebase/firestore";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RootStackParamList } from "../types/navigation";
-import { colors, layout, tokens, radius, spacing } from "../theme";
+import { colors, layout, radius, spacing, tokens } from "../theme";
 import { ChatMessage } from "../types/chat";
 import { db } from "../firebaseApp";
 import { useAuth } from "../context/AuthContext";

@@ -6,17 +6,10 @@ type Props = {
   onPress?: () => void;
   icon: React.ReactNode;
   style?: StyleProp<ViewStyle>;
-  pressedStyle?: StyleProp<ViewStyle>;
   disabled?: boolean;
 };
 
-const IconButton: React.FC<Props> = ({
-  onPress,
-  icon,
-  style,
-  pressedStyle,
-  disabled,
-}) => {
+const IconButton: React.FC<Props> = ({ onPress, icon, style, disabled }) => {
   return (
     <Pressable
       onPress={onPress}
@@ -24,7 +17,6 @@ const IconButton: React.FC<Props> = ({
       style={({ pressed }) => [
         styles.base,
         pressed && !disabled ? styles.pressed : null,
-        pressed && !disabled ? pressedStyle : null,
         disabled ? styles.disabled : null,
         style,
       ]}

@@ -1,7 +1,9 @@
 import React from "react";
-import { StyleSheet, Text, View, Image, ScrollView } from "react-native";
+import { StyleSheet, Text, View, Image, ScrollView, Pressable, Alert } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
+import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { colors, layout, radius, typography } from "../theme";
 import Screen from "../components/Screen";
 import ScreenHeader from "../components/ScreenHeader";
@@ -13,8 +15,9 @@ import PhotoCarousel from "../components/PhotoCarousel";
 import EmptyState from "../components/EmptyState";
 import { useAuth } from "../context/AuthContext";
 import { RootStackParamList } from "../types/navigation";
-import { collection, getDocs, onSnapshot, orderBy, query } from "firebase/firestore";
+import { collection, getDocs, onSnapshot, orderBy, query, where } from "firebase/firestore";
 import { db } from "../firebaseApp";
+import { useEffect, useState } from "react";
 
 type Nav = StackNavigationProp<RootStackParamList, "MyProfile">;
 
@@ -27,6 +30,7 @@ const MyProfileScreen: React.FC = () => {
   const [hostedOutings, setHostedOutings] = React.useState<any[]>([]);
   const [hostedLoading, setHostedLoading] = React.useState(true);
   const [activeTab, setActiveTab] = React.useState<"vibe" | "parties">("vibe");
+  const [connectionsCount, setConnectionsCount] = React.useState<number>(0);
 
   // Refresh profile when screen is focused (e.g., after returning from edit/onboarding)
   React.useEffect(() => {
@@ -71,6 +75,72 @@ const MyProfileScreen: React.FC = () => {
     return () => unsub();
   }, [user]);
 
+  // Load actual connections count from both new subcollection and legacy collection
+  React.useEffect(() => {
+    if (!user) return;
+    
+    const loadConnectionsCount = async () => {
+      try {
+        // Check new subcollection format: users/{uid}/connections
+        const subcollectionRef = collection(db, "users", user.id, "connections");
+        const subcollectionSnap = await getDocs(subcollectionRef);
+        const subcollectionCount = subcollectionSnap.size;
+        
+        // Also check legacy top-level connections collection
+        const legacyRef = query(
+          collection(db, "connections"),
+          where("fromUserId", "==", user.id)
+        );
+        const legacySnap = await getDocs(legacyRef);
+        const legacyCount = legacySnap.size;
+        
+        // Use the maximum count (in case some are in one location and some in another)
+        // Or combine unique connections from both
+        const legacyToUserIds = new Set(legacySnap.docs.map(d => d.data().toUserId));
+        const subcollectionToUserIds = new Set(subcollectionSnap.docs.map(d => d.data().otherUid || d.id));
+        
+        // Combine unique connections from both sources
+        const uniqueConnections = new Set([...legacyToUserIds, ...subcollectionToUserIds]);
+        const totalCount = uniqueConnections.size;
+        
+        console.log(`[MyProfile] Connections count - Subcollection: ${subcollectionCount}, Legacy: ${legacyCount}, Total unique: ${totalCount} for user ${user.id}`);
+        setConnectionsCount(totalCount);
+      } catch (error: any) {
+        console.error("[MyProfile] Error loading connections count:", error);
+        // Fallback to profile count if read fails
+        const fallbackCount = profile?.connectionsCount ?? 0;
+        console.log(`[MyProfile] Using fallback count: ${fallbackCount}`);
+        setConnectionsCount(fallbackCount);
+      }
+    };
+    
+    loadConnectionsCount();
+    
+    // Subscribe to real-time updates from both sources
+    const subcollectionRef = collection(db, "users", user.id, "connections");
+    const legacyRef = query(
+      collection(db, "connections"),
+      where("fromUserId", "==", user.id)
+    );
+    
+    const unsub1 = onSnapshot(
+      subcollectionRef,
+      () => loadConnectionsCount(),
+      (error) => console.error("[MyProfile] Error in subcollection snapshot:", error)
+    );
+    
+    const unsub2 = onSnapshot(
+      legacyRef,
+      () => loadConnectionsCount(),
+      (error) => console.error("[MyProfile] Error in legacy connections snapshot:", error)
+    );
+    
+    return () => {
+      unsub1();
+      unsub2();
+    };
+  }, [user, profile?.connectionsCount]);
+
   if (!profile) {
     return (
       <Screen contentContainerStyle={styles.centered}>
@@ -106,15 +176,42 @@ const MyProfileScreen: React.FC = () => {
       <Text style={styles.subtitle}>
         {profile.city}, {profile.country || "India"}
       </Text>
+      
+      {/* User ID Section */}
+      {profile.user_code ? (
+        <Card style={styles.userIdCard} padding="lg">
+          <View style={styles.userIdRow}>
+            <View style={styles.userIdContent}>
+              <Text style={styles.userIdLabel}>Your ID</Text>
+              <Text style={styles.userIdValue}>{profile.user_code}</Text>
+            </View>
+            <Pressable
+              style={styles.copyButton}
+              onPress={() => {
+                Clipboard.setString(profile.user_code || "");
+                Alert.alert("Copied!", "Your user ID has been copied to clipboard");
+              }}
+            >
+              <Ionicons name="copy-outline" size={20} color={colors.textPrimary} />
+            </Pressable>
+          </View>
+        </Card>
+      ) : null}
+
       <View style={styles.statsRow}>
         <Card style={styles.statCard} padding="lg">
           <Text style={styles.statLabel}>Hosted</Text>
           <Text style={styles.statValue}>{hostedCount}</Text>
         </Card>
-        <Card style={styles.statCard} padding="lg">
-          <Text style={styles.statLabel}>Connections</Text>
-          <Text style={styles.statValue}>{profile.connectionsCount ?? 0}</Text>
-        </Card>
+        <Pressable
+          onPress={() => navigation.navigate("Connections")}
+          style={styles.statCardPressable}
+        >
+          <Card style={styles.statCard} padding="lg">
+            <Text style={styles.statLabel}>Connections</Text>
+            <Text style={styles.statValue}>{connectionsCount}</Text>
+          </Card>
+        </Pressable>
         <Card style={styles.statCard} padding="lg">
           <Text style={styles.statLabel}>Events attended</Text>
           <Text style={styles.statValue}>{pastOutings.length}</Text>
@@ -304,12 +401,42 @@ const styles = StyleSheet.create({
     ...typography.body2,
     marginBottom: layout.section,
   },
+  userIdCard: {
+    marginBottom: layout.section,
+    marginHorizontal: layout.gutter,
+  },
+  userIdRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  userIdContent: {
+    flex: 1,
+  },
+  userIdLabel: {
+    color: colors.textMuted,
+    ...typography.micro,
+    marginBottom: layout.compact / 2,
+  },
+  userIdValue: {
+    color: colors.textPrimary,
+    ...typography.h3,
+    fontWeight: "700",
+    letterSpacing: 1,
+  },
+  copyButton: {
+    padding: layout.compact,
+    marginLeft: layout.section,
+  },
   statsRow: {
     flexDirection: "row",
     gap: layout.section,
     marginBottom: layout.section,
   },
   statCard: {
+    flex: 1,
+  },
+  statCardPressable: {
     flex: 1,
   },
   statLabel: {
